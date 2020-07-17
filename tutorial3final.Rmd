@@ -1,0 +1,2195 @@
+---
+title: Estimating excess of deaths during COVID-19 pandemics - A step-by-step tutorial
+  and guidance
+author:
+- Lucas Sempé^[University of East Anglia & Univesidad Católica San Pablo - email:l.sempe@uea.ac.uk]
+- Peter Lloyd-Sherlock^[University of East Anglia]
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  bookdown::pdf_document2:
+    toc: no
+    fig_caption: yes
+    keep_tex: yes
+    df_print: kable
+  pdf_document:
+    fig_caption: yes
+    keep_tex: yes
+    df_print: kable
+  word_document:
+    toc: no
+bibliography: C:/Users/LUCAS/Documents/library.bib
+subtitle: Working paper 01/20 - Global Platform for the Rapid Generation and Transfer
+  of Knowledge| on COVID-19 and older adults in low and middle-income countries
+  (GP-Older-COVID)
+numbersections: yes
+editor_options:
+  chunk_output_type: console
+header-includes:
+- \usepackage{booktabs}
+- \usepackage{caption}
+- \usepackage{siunitx}
+- \usepackage{float}
+- \usepackage{amsmath}
+- \usepackage{amsfonts}
+---
+
+```{r, options, echo=F}
+knitr::opts_chunk$set(
+  echo = FALSE, warning = F,message = F, tinytex.verbose = TRUE,fig.pos = 'H')
+
+setwd("C:/Users/LUCAS/Desktop/Excess.deaths.PERU")
+```
+
+```{r, packages}
+library(syn)
+library(tidyverse)
+library(ggforce)
+library(readxl)
+library(stargazer)
+library(epiR)
+library(feasts)
+library(fable)
+library(tsibble)
+library(lubridate)
+library(broom)
+library(tabulizer)
+library(ggrepel)
+library(ggtext)
+library(mgcv)
+library(scales)
+library(sf)
+library(rmarkdown)
+library(bookdown)
+library(synamyn)
+library(addinslist) 
+library(CausalImpact)
+
+```
+
+<!-- Basics -->
+
+```{r, Estimated population by age and sex - 1950-2020, cache=TRUE}
+
+####
+#### RELEVANT DATA TO BE USED IN TUTORIAL OR ANALYSIS 
+####
+
+#### POPULATION ####
+
+#### Estimated population by age and sex - 1950-2020 ####
+
+pob.nac.ed.sex.1950.2020 <- read_excel("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/poblacionINEI.xlsx")
+
+pob.nac.ed.sex.1950.2020$Sexo<-factor(pob.nac.ed.sex.1950.2020$Sexo,
+                                      levels = c(0,1),
+                                      labels = c("M", "F"))
+
+
+
+#### Population national 2005-2020 by sex and group - long ####
+
+pob.nac.2005.2020.sex.groups.age<- pob.nac.ed.sex.1950.2020%>%group_by(range,Sexo)%>%
+  dplyr::select (`2005`:`2020`)  %>%
+  summarise(across(`2005`:`2020`, sum)) %>%
+  pivot_longer(cols = `2005`:`2020`,values_to="pob")
+```
+
+```{r, Registered mortality regions, cache=TRUE}
+#### Defunciones registradas INEI - departamentos 2007:2018 ####
+
+defuncionesINEI <- read_excel("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/defuncionesINEI.xlsx")
+
+#variable.names(defuncionesINEI)
+colnames(defuncionesINEI)[1]<-"Departamento"
+
+defuncionesINEI.long<-defuncionesINEI%>% 
+  dplyr::select (`2007`:`2018`) %>%
+  summarise(across(`2007`:`2018`, sum,na.rm = T)) %>%
+  pivot_longer(cols = `2007`:`2018`)
+
+Departamento<-defuncionesINEI$Departamento
+Departamento[Departamento=="LIMA.MET" ] <- "LIMA"
+Departamento<-Departamento[-16]
+
+```
+
+```{r, Population region and age 1, cache=TRUE}
+
+pob.regiones.ed.2005.2015 <- "C:/Users/LUCAS/Desktop/Excess.deaths.PERU/poblaciones regiones grupos de edad.xls"
+
+pob.regiones.ed.2005.2015 <- pob.regiones.ed.2005.2015 %>%
+  excel_sheets() %>%
+  set_names() %>%
+  map_df(~ read_excel(path = pob.regiones.ed.2005.2015,
+                      sheet = .x, range = "A6:U2529"), .id = "sheet")
+
+#variable.names(pob.regiones.ed.2005.2015)
+
+colnames(pob.regiones.ed.2005.2015)[2]<-"nivel"
+colnames(pob.regiones.ed.2005.2015)[3]<-"UBIGEO"
+colnames(pob.regiones.ed.2005.2015)[4]<-"Departamento"
+
+pob.regiones.ed.2005.2015<-pob.regiones.ed.2005.2015 %>% 
+  filter(str_detect(UBIGEO,pattern = "0000"))
+
+pob.regiones.ed.2005.2015$Departamento[pob.regiones.ed.2005.2015$Departamento=="PROV. CONST. DEL CALLAO"]<-"CALLAO"
+pob.regiones.ed.2005.2015$Departamento[pob.regiones.ed.2005.2015$Departamento=="ÁNCASH"]<-"ANCASH"
+pob.regiones.ed.2005.2015$Departamento[pob.regiones.ed.2005.2015$Departamento=="HUÁNUCO"]<-"HUANUCO"
+
+pob.regiones.ed.2005.2015$`80 y más`<-as.numeric(pob.regiones.ed.2005.2015$`80 y más`)
+
+headers<-names(pob.regiones.ed.2005.2015)[c(4,6:22)]
+
+#head(pob.regiones.ed.2005.2015)
+
+# pob regiones 2005.2015 long
+
+pob.regiones.2005.2015.long<-pob.regiones.ed.2005.2015%>% 
+  dplyr::mutate(rowsum = rowSums(.[6:22]))%>%group_by(Departamento,sheet)%>%
+  dplyr::select(rowsum)
+
+#head(pob.regiones.2005.2015.long)
+colnames(pob.regiones.2005.2015.long)[2]<-"year"
+colnames(pob.regiones.2005.2015.long)[3]<-"population"
+
+```
+
+```{r, Population per region, sex and age - 2020, cache=TRUE}
+#### Population per region, sex and age - 2020 ####
+
+f <- "C:/Users/LUCAS/Desktop/Excess.deaths.PERU/interes_5.pdf"
+
+pob.mas.age.region <- extract_tables(f, pages = 74)
+pob.mas.age.region <- do.call(rbind, pob.mas.age.region)
+pob.mas.age.region<-as.data.frame(pob.mas.age.region)
+pob.mas.age.region<-pob.mas.age.region[-1,]
+
+pob.mas.age.region$V2<-NULL
+
+# Apply custom column names
+names(pob.mas.age.region) <- headers
+
+pob.mas.age.region<-lapply( pob.mas.age.region, function(col_) {gsub( " ","",col_)} )
+
+pob.mas.age.region<-as.data.frame(do.call(cbind, pob.mas.age.region))
+
+pob.mas.age.region$Departamento<-Departamento
+
+# extract tables
+
+pob.fem.age.region <- extract_tables(f, pages = 75)
+pob.fem.age.region <- do.call(rbind, pob.fem.age.region)
+pob.fem.age.region<-as.data.frame(pob.fem.age.region)
+pob.fem.age.region<-pob.fem.age.region[-1,]
+
+pob.fem.age.region$V2<-NULL
+
+# Apply custom column names
+
+names(pob.fem.age.region) <- headers
+
+pob.fem.age.region<-lapply( pob.fem.age.region, function(col_) {gsub( " ","",col_)} )
+
+pob.fem.age.region<-as.data.frame(do.call(cbind, pob.fem.age.region))
+
+pob.fem.age.region$Departamento<-Departamento
+
+pob.mas.age.region$Sexo<-0
+pob.fem.age.region$Sexo<-1
+
+pob.regiones.group.age.sex.2020<-rbind(pob.fem.age.region,pob.mas.age.region)
+
+#variable.names(pob.regiones.group.age.sex.2020)
+
+cols <- names(pob.regiones.group.age.sex.2020)[2:18]
+
+pob.regiones.group.age.sex.2020[cols] <- lapply(pob.regiones.group.age.sex.2020[cols], as.numeric)
+
+pob.regiones.group.age.sex.2020<-pob.regiones.group.age.sex.2020%>% 
+  mutate(a0.9 = rowSums(.[2:3]),
+         a10.19 = rowSums(.[4:5]),
+         a20.29 = rowSums(.[6:7]),
+         a30.39 = rowSums(.[8:9]),
+         a40.49 = rowSums(.[10:11]),
+         a50.59 = rowSums(.[12:13]),
+         a60.69  = rowSums(.[14:15]),
+         a70.79 = rowSums(.[16:17]),
+         a80 = rowSums(.[18])) %>%
+  dplyr::select(Departamento,Sexo,a0.9:a80)%>%
+  group_by(Departamento, Sexo) %>%
+  pivot_longer(cols = a0.9:a80)
+
+#head(pob.regiones.group.age.sex.2020)
+colnames(pob.regiones.group.age.sex.2020)[4]<-"population"
+
+#pob.regiones.group.age.sex.2020$population <- ifelse(pob.regiones.group.age.sex.2020$Sexo == 0, -1*pob.regiones.group.age.sex.2020$population, pob.regiones.group.age.sex.2020$population)
+pob.regiones.group.age.sex.2020$Sexo<-as.factor(pob.regiones.group.age.sex.2020$Sexo)
+
+pob.regiones.group.age.sex.2020$Sexo<-factor(pob.regiones.group.age.sex.2020$Sexo,
+                                             levels = c(0,1),
+                                             labels = c("Male", "Female"))
+
+#pob.regiones.group.age.sex.2020 <- with(pob.regiones.group.age.sex.2020, pob.regiones.group.age.sex.2020[order(Sexo,name),])
+```
+
+```{r, SINADEF, cache=TRUE}
+#### SINADEF #####
+
+# SINADEF - SOURCE: https://cloud.minsa.gob.pe/s/NctBnHXDnocgWAg - July 13th
+
+SINADEF <- read_excel("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/SINADEF_DATOS_ABIERTOS_13072020.xlsx",skip=3)
+
+#variable.names(SINADEF)
+
+colnames(SINADEF)[10]<-"Departamento"
+
+#str(SINADEF)
+SINADEF$edad.num<-SINADEF$EDAD
+SINADEF$edad.num<-as.numeric(SINADEF$edad.num)
+
+#summary(SINADEF$edad.num)
+#table(SINADEF$`TIEMPO EDAD`,SINADEF$AÑO)
+#table(SINADEF$`TIEMPO EDAD`,SINADEF$EDAD)
+
+
+SINADEF$edad.num[SINADEF$`TIEMPO EDAD` == "DIAS" | SINADEF$`TIEMPO EDAD` == "HORAS"|
+                   SINADEF$`TIEMPO EDAD` == "MESES" |
+                   SINADEF$`TIEMPO EDAD` == "MINUTOS"|
+                   SINADEF$`TIEMPO EDAD` == "SEGUNDOS"] <- 0
+
+#summary(SINADEF$edad.num)
+#table(SINADEF$edad.num,SINADEF$`TIEMPO EDAD`)
+
+SINADEF <- SINADEF %>%
+  mutate(range = case_when(
+    edad.num < 10 ~ "a0.9",
+    edad.num >= 10 & edad.num <20 ~ "a10.19",
+    edad.num >= 20 & edad.num <30 ~ "a20.29",
+    edad.num >= 30 & edad.num <40 ~ "a30.39",
+    edad.num >= 40 & edad.num <50 ~ "a40.49",
+    edad.num >= 50 & edad.num <60 ~ "a50.59",
+    edad.num >= 60 & edad.num <70 ~ "a60.69",
+    edad.num >= 70 & edad.num <80 ~ "a70.79",
+    edad.num >= 80 ~ "a80")) 
+
+SINADEF <-SINADEF%>% 
+  filter(Departamento!="SIN REGISTRO" & Departamento!="EXTRANJERO") 
+
+#variable.names(SINADEF)
+
+#SINADEF%>%filter(AÑO==2020 & MES=="06") %>% group_by (`CAUSA A (CIE-X)`) %>% summarise(n=n())%>% print(n=2000)
+
+```
+
+<!-- Mortality rate countries-->
+
+```{r, mortality countries, cache=TRUE}
+
+#### ESTIMATED MORTALITY ####
+
+#### Death rate, crude (per 1,000 people) across world -  WORLD BANK ####
+
+mortalidad_region <- read_excel("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/mortalidadregion.xls")
+
+#head(mortalidad_region)
+
+cmr.region<-mortalidad_region%>% dplyr::select(`Country Name`,`2000`:`2018`)%>%
+  filter(`Country Name`=="Argentina"|
+           `Country Name`=="Brazil"|
+           `Country Name`=="Bolivia"|
+           `Country Name`=="Chile"|
+           `Country Name`=="Colombia"|
+           `Country Name`=="Ecuador"|
+           `Country Name`=="Peru"|
+           `Country Name`=="Paraguay"|
+           `Country Name`=="Venezuela"|
+           `Country Name`=="Uruguay") %>%
+  pivot_longer(cols = `2000`:`2018`)
+
+colnames(cmr.region)[3]<-"rate"
+
+```
+
+<!-- Mortality rate regions-->
+
+```{r, Mortality rates region, cache=TRUE}
+
+tasasmortalidadregionesMINSAtableau <- read_excel("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/tasasmortalidadregionesMINSAtableau.xlsx")
+
+tibble.mort.regiones<-tasasmortalidadregionesMINSAtableau%>% 
+  mutate(Año = lubridate::year(as.period(as.numeric(Año),unit="year")))
+
+tibble.mort.regiones<-tasasmortalidadregionesMINSAtableau%>% 
+  mutate(Año = lubridate::year(as.period(as.numeric(Año),unit="year")))
+
+tibble.mort.regiones<-as_tsibble(tibble.mort.regiones,index=Año,
+                                 key=Departamento)
+
+#tibble.mort.regiones$Departamento<-as.factor(tibble.mort.regiones$Departamento)
+```
+
+```{r, Modelling and forecasting mortality rate regions, cache=TRUE}
+
+##### Modelling and forecasting mortality rate regions ####
+
+fit.mort.reg <- tibble.mort.regiones %>%
+  model(
+    arima = ARIMA(`Tasa Cruda`,stepwise=FALSE,approx=FALSE),
+    drift = RW(`Tasa Cruda` ~ drift()))
+
+fc_mort.reg <- fit.mort.reg %>% forecast(h=1) %>%  #,bootstrap=T
+  mutate(interval = hilo(.distribution, 95))
+
+#variable.names(fc_mort.reg)
+colnames(fc_mort.reg)[4]<-"pred.tasa"
+```
+
+```{r, Mortality rate models Analysis and model choice, cache=TRUE}
+# Analysis of models
+
+mort.rate.regions.range.2010.2015.2020 <- read_excel("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/tasa.mort.regiones.xlsx")
+mort.rate.regions.range.2010.2015.2020<- mort.rate.regions.range.2010.2015.2020%>%
+pivot_longer(cols = `2010`:`2015`)
+#variable.names(mort.rate.regions.range.2010.2015.2020)
+colnames(mort.rate.regions.range.2010.2015.2020)[2]<-"year.range"
+colnames(mort.rate.regions.range.2010.2015.2020)[3]<-"crm"
+mort.rate.regions.range.2010.2015.2020$year.range[mort.rate.regions.range.2010.2015.2020$year.range=="2015"]<-"2015-2020"
+mort.rate.regions.range.2010.2015.2020$year.range[mort.rate.regions.range.2010.2015.2020$year.range=="2010"]<-"2010-2014"
+
+
+compare.mort.reg<-as_tibble(fc_mort.reg)%>%filter(Año=="2020")%>%
+  full_join(mort.rate.regions.range.2010.2015.2020,
+            by=c("Departamento"="Departamento"))%>% 
+  filter(year.range!="2010-2014")%>% 
+  mutate(dif=(pred.tasa-crm)/crm,
+         abs.dif=pred.tasa-crm)
+
+#ggplot(compare.mort.reg)+geom_density(aes(x=dif,fill=.model),alpha=.5)
+
+#tapply(compare.mort.reg$dif,compare.mort.reg$.model,function (x) summary(x,na.rm=T))
+#tapply(compare.mort.reg$dif,compare.mort.reg$.model,sd)
+
+dfann <- data.frame(x = c(5.2,6.5), y = c(8,4), 
+                    labl = c("overprediction","underprediction"))
+
+#### Choose 1 model to forecast ####
+
+# OJO, estoy usando ambos modelos
+
+fc_mort.reg.piece<-fc_mort.reg #%>%filter(.model=="drift")
+int3<-do.call("rbind", lapply(fc_mort.reg.piece$interval, as.numeric))
+fc_mort.reg.piece<-cbind(fc_mort.reg.piece,int3)
+
+#variable.names(fc_mort.reg.piece)
+
+colnames(fc_mort.reg.piece)[2]<-"model.mort"
+colnames(fc_mort.reg.piece)[5]<-"distrib.mort"
+colnames(fc_mort.reg.piece)[6]<-"interval.mort"
+colnames(fc_mort.reg.piece)[7]<-"lower.mort"
+colnames(fc_mort.reg.piece)[8]<-"upper.mort"
+colnames(fc_mort.reg.piece)[9]<-"ci.mort"
+
+fc_mort.reg.piece<-fc_mort.reg.piece%>%full_join(tibble.mort.regiones)
+
+#head(fc_mort.reg.piece)
+
+#duplicate rows 2020 and recode them as 2019 (so I can compare later mortality estimations with registered)
+
+#str(fc_mort.reg.piece$Año)
+
+fe<-fc_mort.reg.piece %>% 
+                filter(Año == 2020) %>% 
+  mutate(Año=dplyr::recode(Año,`2020`=2019))
+    
+fc_mort.reg.piece<-fc_mort.reg.piece%>%full_join(fe)
+
+# new dataframe: mortality rate + region sex
+
+#variable.names(fc_mort.reg.piece)
+#variable.names(fc_sexo.arima)
+
+#table(fc_sexo.arima$year)
+#table(fc_mort.reg.piece$Año)
+```
+
+<!-- Population modelling-->
+
+```{r, Population region and age long, cache=TRUE}
+# Poblacion regiones y grupos de edad
+
+pob.regiones.grupos.ed.2005.2015.long<-pob.regiones.ed.2005.2015%>% 
+  arrange(Departamento,sheet) %>%
+  mutate(a0.9 = rowSums(.[6:7]),
+         a10.19 = rowSums(.[8:9]),
+         a20.29 = rowSums(.[10:11]),
+         a30.39 = rowSums(.[12:13]),
+         a40.49 = rowSums(.[14:15]),
+         a50.59 = rowSums(.[16:17]),
+         a60.69  = rowSums(.[18:19]),
+         a70.79 = rowSums(.[20:21]),
+         a80 = rowSums(.[22]))%>%  dplyr::select(Departamento,sheet,a0.9:a80)%>%
+  group_by(Departamento,sheet)%>%
+  pivot_longer(a0.9:a80)
+
+colnames(pob.regiones.grupos.ed.2005.2015.long)[2]<-"year"
+colnames(pob.regiones.grupos.ed.2005.2015.long)[3]<-"range"
+
+#pob.regiones.grupos.ed.2005.2015.long%>%group_by(year,range)%>%  filter(year==2015)%>%summarise(sum=sum(value))
+
+```
+
+```{r, Population modeling, cache=TRUE}
+#### Population: modelling and forecasting ####
+
+tibble.pob.regiones<-pob.regiones.grupos.ed.2005.2015.long%>% 
+  mutate(year = lubridate::year(as.period(as.numeric(year),unit="year")))%>% 
+  as_tibble()
+
+tibble.pob.regiones<-as_tsibble(tibble.pob.regiones,index=year,key=c(Departamento,range))
+
+#table(tibble.pob.regiones$year)
+
+fit.edades <- tibble.pob.regiones %>%
+  model(
+    arima = ARIMA(value,stepwise=FALSE,approx=FALSE),
+    drift = RW(value ~ drift()))
+#fit.edades
+
+fc_edades <- fit.edades %>% forecast(h=5) %>%  # ,bootstrap=T
+  mutate(interval = hilo(.distribution, 95))
+
+#fc_edades
+colnames(fc_edades)[5]<-"pop.estimated"
+
+#### Compare forecast against values in 2020 ####
+
+fc_trends.sum.pop<-fc_edades%>% filter(year=="2020")%>%
+  group_by(Departamento,range,.model)%>%
+  summarise(mean=mean(pop.estimated)) %>% group_by(.model)%>%
+  summarise(sum.m=sum(mean),
+            dif.pop=(sum.m/32824358)*100)
+
+compare.estim.age<-pob.regiones.group.age.sex.2020%>%
+  group_by(Departamento,name)%>%
+  summarise(sumi=sum(population))
+
+compare.estim.fit.edades<-fc_edades%>%filter(year==2020)%>%
+  left_join(compare.estim.age,
+            by=c("Departamento"="Departamento",
+                 "range"="name"))%>% group_by(.model)%>%
+  mutate(dif=(pop.estimated-sumi)/sumi,abs.dif=pop.estimated-sumi)
+
+#compare.estim.fit.edades
+#### Choosing 1 model and forecast ####
+
+#OJO, USANDO AMBOS MODELOS
+
+fc_edades.arima<-fc_edades #%>% filter(.model=="drift")
+int2<-do.call("rbind", lapply(fc_edades.arima$interval, as.numeric))
+fc_edades.arima<-cbind(fc_edades.arima,int2)
+
+#variable.names(tibble.pob.regiones)
+colnames(tibble.pob.regiones)[4]<-"population"
+
+fc_edades.arima<-fc_edades.arima %>%
+  full_join(tibble.pob.regiones)
+
+#variable.names(fc_edades.arima)
+
+colnames(fc_edades.arima)[3]<-"model.pop"
+colnames(fc_edades.arima)[6]<-"distrib.pop"
+colnames(fc_edades.arima)[7]<-"interval.pop"
+colnames(fc_edades.arima)[8]<-"lower.pop"
+colnames(fc_edades.arima)[9]<-"upper.pop"
+colnames(fc_edades.arima)[10]<-"ci.pop"
+
+#table(fc_edades.arima$range,fc_edades.arima$year)
+```
+
+
+<!--Expected mortality by range of age: forecast-->
+
+```{r, Expected mortality - exposure ratio by age on SINADEF, cache=TRUE}
+
+#### EXPECTED MORTALITY ####
+
+#### Compute and use exposure ratio deaths by age from registered mortality 2018 SINADEF (no better source) ####
+
+mortality.rate.age.sinadef<-SINADEF  %>% filter (!is.na(range)) %>%
+  group_by(AÑO, Departamento,range) %>% summarise(deaths=n()) %>%
+  mutate(d=sum(deaths),prop=deaths/d)
+
+mortality.rate.age.sinadef$AÑO<-as.numeric(mortality.rate.age.sinadef$AÑO)
+colnames(mortality.rate.age.sinadef)[1]<-"AÑO"
+
+mortality.rate.age.sinadef.mod<-mortality.rate.age.sinadef %>%
+  filter(AÑO !=2020) %>%
+  mutate(AÑO=dplyr::recode(AÑO,`2018`=2020, `2017`=2015))
+
+colnames(mortality.rate.age.sinadef.mod)[4]<-"deaths.sin.mod"
+```
+
+```{r, Merge forecast population, mortality ratio age and forecast expected mortality, cache=TRUE}
+#### Merge forecast population, mortality ratio age and forecast expected mortality ####
+
+#variable.names(mortality.rate.age.sinadef.mod)
+#variable.names(fc_mort.reg.piece)
+#variable.names(fc_edades.arima)
+
+fc_edades.arima<-fc_edades.arima%>%left_join(mortality.rate.age.sinadef.mod,
+                                         by=c("Departamento","range","year"="AÑO"))
+
+
+fc_mort.reg.piece.pop.edades<-fc_mort.reg.piece%>%left_join(fc_edades.arima,
+                                                          by=c("Departamento",
+                                                               "Año"="year"))
+
+fc_mort.reg.piece.pop.edades<-fc_mort.reg.piece.pop.edades%>%unnest_wider(distrib.mort)
+
+#variable.names(fc_mort.reg.piece.pop.edades)
+colnames(fc_mort.reg.piece.pop.edades)[5]<-"mean.mr"
+colnames(fc_mort.reg.piece.pop.edades)[6]<-"sd.mr"
+fc_mort.reg.piece.pop.edades$.env<-NULL
+
+fc_mort.reg.piece.pop.edades<-fc_mort.reg.piece.pop.edades%>%unnest_wider(distrib.pop)
+
+#variable.names(fc_mort.reg.piece.pop.edades)
+colnames(fc_mort.reg.piece.pop.edades)[17]<-"mean.pop.estim"
+colnames(fc_mort.reg.piece.pop.edades)[18]<-"sd.pop.estim"
+fc_mort.reg.piece.pop.edades$.env<-NULL
+
+fc_mort.reg.piece.pop.edades<-fc_mort.reg.piece.pop.edades %>% 
+  group_by(Departamento,model.mort,model.pop,Año,range) %>%  #
+  mutate(
+  mort.estim.edades =((pred.tasa/1000)*pop.estimated),
+  mort.estim.edades.ci.propag = abs((mean.mr/1000)*mean.pop.estim)*
+                        sqrt(((sd.mr/1000)/(mean.mr/1000))^2+                                                                          (sd.pop.estim/mean.pop.estim)^2),
+ mort.estim.edad.retro=((`Tasa Cruda`/1000)*population))
+
+#variable.names(fc_mort.reg.piece.pop.edades)
+
+
+fc_mort.reg.piece.pop.edades<-fc_mort.reg.piece.pop.edades%>%group_by(Departamento,Año,
+                                                                      model.mort,model.pop)%>%
+                      mutate(sum.deaths=sum(mort.estim.edades),
+                           sum.deaths.retro=sum(mort.estim.edad.retro),
+                           sum.ci=sum(mort.estim.edades.ci.propag),
+                          mort.estim.edades.f=prop*sum.deaths,
+                         mort.estim.edad.retro.f=prop*sum.deaths.retro,
+                         mort.estim.edades.ci.propag=sum.ci*prop) #*prop
+
+#table(fc_mort.reg.piece.pop.edades$prop)
+
+# chequear año de variables
+#fc_mort.reg.piece.pop.edades%>%group_by(Año)%>%filter(Año >=2010)%>%summarise(  pred.tasa=mean(pred.tasa,na.rm = T),              pop.estim=mean(pop.estimated,na.rm = T), prop=mean(prop,na.rm = T),            tasacruda=mean(`Tasa Cruda`,na.rm = T), popul=mean(population,na.rm=T))
+
+#variable.names(fc_mort.reg.piece.pop.edades)
+```
+
+```{r, Expected mortality and CI by region and range of age, cache=TRUE}
+#### Expected mortality count and CI by regions and age - 2020 ####
+
+estimated.mortality.region.edades.FINAL<-fc_mort.reg.piece.pop.edades%>%
+  mutate(mort.propagate.lower=mort.estim.edades.f-1.96*sqrt(mort.estim.edades.ci.propag),
+         mort.propagate.upper=mort.estim.edades.f+1.96*sqrt(mort.estim.edades.ci.propag))
+
+
+#mort.estimat.nac.2005.2020.long
+```
+
+
+<!-- Global burden death-->
+
+```{r, Global burden death - Death estimations by group of age, cache=TRUE}
+
+# Global burden death
+
+IHME.GBD_2017 <- read.csv("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/IHME-GBD_2017.csv")
+
+#table(IHME.GBD_2017$age)
+#table(IHME.GBD_2017$year)
+
+#IHME.GBD_2017%>%   filter(age=="All Ages" & sex=="Both")%>%group_by(year)%>%   summarise(s=mean(val), low=mean(lower), up=mean(upper))
+
+IHME.GBD_2017.m <- IHME.GBD_2017 %>% filter(sex=="Both")%>%
+  mutate(range = case_when(
+    age == "<1 year" |age == "1 to 4" | age=="5 to 9" ~ "a0.9",
+    age == "10 to 14"| age=="15 to 19" ~ "a10.19",
+    age == "20 to 24"| age=="25 to 29" ~ "a20.29",
+    age == "30 to 34"| age=="35 to 39" ~ "a30.39",
+    age == "40 to 44"| age=="45 to 49" ~ "a40.49",
+    age == "50 to 54"| age=="55 to 59" ~ "a50.59",
+    age == "60 to 64"| age=="65 to 69" ~ "a60.69",
+    age == "70 to 74"| age=="75 to 79" ~ "a70.79",
+    age == "80 to 84"| age == "85 to 89" 
+    | age == "90 to 94" | age == "95 plus"~ "a80"))
+
+IHME.GBD_2017.m <- IHME.GBD_2017.m %>% filter(!is.na(range))%>% 
+    dplyr::group_by(range,year)%>%
+    mutate(vali=sum(val),vali.low=sum(lower),vali.up=sum(upper)) %>%
+  dplyr::select(year,range,vali, vali.low,vali.up)%>%
+     distinct(vali, .keep_all = TRUE)
+
+#variable.names(IHME.GBD_2017.m)
+
+#IHME.GBD_2017.m%>% filter(year>2014)%>% ungroup()%>%  group_by(year)%>%  summarise(s=sum(vali),  low=sum(vali.low),up=sum(vali.up))
+
+
+#IHME.GBD_2017.m%>%group_by(year)%>%summarise(s=sum(vali))
+
+IHME.GBD_2017.m <-IHME.GBD_2017.m  %>%
+  group_by(year) %>% 
+  mutate(d=sum(vali),prop=vali/d)
+
+#IHME.GBD_2017.m%>%group_by(year)%>%summarise(s=sum(prop))
+
+IHME.GBD_2017.m$d<-NULL
+#variable.names(IHME.GBD_2017.m)
+colnames(IHME.GBD_2017.m)[3]<-"deaths.GBD"
+colnames(IHME.GBD_2017.m)[4]<-"deaths.lower.GBD"
+colnames(IHME.GBD_2017.m)[5]<-"deaths.upper.GBD"
+colnames(IHME.GBD_2017.m)[6]<-"prop.range.GBD"
+
+tibble.IHME.GBD_2017.m<-as_tsibble(IHME.GBD_2017.m,index=year,key=range)
+
+fit.GBD <- tibble.IHME.GBD_2017.m %>%
+  model(
+    arima = ARIMA(deaths.GBD,stepwise=FALSE,approx=FALSE),
+    drift= RW(deaths.GBD ~ drift()))
+
+fc_GBD <- fit.GBD %>% forecast(h=3) %>%  #,bootstrap=T
+  mutate(interval = hilo(.distribution, 95))
+
+colnames(fc_GBD)[4]<-"estimated.GBD"
+
+
+int7<-do.call("rbind", lapply(fc_GBD$interval, as.numeric))
+fc_GBD.f<-cbind(fc_GBD,int7)
+
+#variable.names(fc_GBD.f)
+#head(fc_GBD.f)
+
+colnames(fc_GBD.f)[5]<-"distrib.GBD.mean"
+colnames(fc_GBD.f)[6]<-"interval.GBD.mean"
+colnames(fc_GBD.f)[7]<-"lower.GBD.mean"
+colnames(fc_GBD.f)[8]<-"upper.GBD.mean"
+colnames(fc_GBD.f)[9]<-"ci.GBD.mean"
+
+#fc_GBD.f%>%group_by(.model,year)%>%summarise(a=sum(estimated.GBD))
+
+```
+
+```{r, GBD - modelling per region, cache=TRUE}
+
+prop.defunciones<-defuncionesINEI
+
+prop.defunciones<-prop.defunciones%>%
+  mutate(Departamento = ifelse(Departamento=="LIMA.MET" | Departamento =="LIMA.PROV",
+                               "LIMA", Departamento))
+
+prop.defunciones<-prop.defunciones%>% 
+  dplyr::select (Departamento:`2018`) %>% group_by(Departamento)%>%
+  summarise(across(`2007`:`2018`, sum,na.rm = T)) %>%
+  pivot_longer(cols = `2007`:`2018`,names_to="year",values_to="deaths.INEI")%>%
+  ungroup()%>%  group_by(year) %>% 
+  mutate(d=sum(deaths.INEI),prop.INEI=deaths.INEI/d)
+
+prop.defunciones$year<-as.numeric(prop.defunciones$year)
+
+
+prop.dup<-prop.defunciones %>% 
+                filter(year == 2018) %>% 
+  mutate(year=dplyr::recode(year,`2018`=2019))
+         
+prop.defunciones<-prop.defunciones%>%full_join(prop.dup)      
+
+prop.dup2<-prop.defunciones %>% 
+                filter(year == 2018) %>% 
+  mutate(year=dplyr::recode(year,`2018`=2020))
+
+prop.defunciones<-prop.defunciones%>%full_join(prop.dup2)      
+###
+
+mortality.rate.sinadef<-SINADEF  %>% 
+  group_by(AÑO, Departamento) %>% summarise(deaths=n()) %>%  filter (AÑO==2018)%>%
+  mutate(d=sum(deaths),prop=deaths/d) %>%right_join(prop.defunciones,by="Departamento")%>%
+  filter (year==2018)
+
+#ggplot(mortality.rate.sinadef)+  geom_point(aes(x=prop,y=prop.INEI))
+
+#cor(mortality.rate.sinadef$prop,mortality.rate.sinadef$prop.INEI)
+
+
+#variable.names(fc_GBD.f)
+#variable.names(prop.defunciones)
+
+fc_GBD.departamento<-fc_GBD.f %>%left_join(prop.defunciones) %>%filter(year>2017)%>%
+  mutate(mort.estim.depar.range= estimated.GBD*prop.INEI,
+         mort.estim.depar.range.lower= lower.GBD.mean*prop.INEI,
+         mort.estim.depar.range.upper= upper.GBD.mean*prop.INEI)
+
+
+#fc_GBD.departamento%>%group_by(year,.model)%>%  summarise(a=sum(mort.estim.depar.range,na.rm = T))
+
+
+#fc_GBD.departamento %>%filter(.model=="arima")%>%ggplot()+geom_line(aes(x=year,y=mort.estim.depar.range,group=range,colour=range))+  facet_wrap(~Departamento,scales = "free")+  geom_errorbar(aes(x=year,ymin=mort.estim.depar.range.lower,                    ymax=mort.estim.depar.range.upper),width=.2,alpha=.3)
+  
+  
+ta<-IHME.GBD_2017.m%>%
+  group_by(year)%>%
+  summarise(s=sum(deaths.GBD),
+            low=sum(deaths.lower.GBD),
+            up=sum(deaths.upper.GBD))
+
+#fc_GBD.departamento %>% group_by(.model,year)%>% summarise(s=sum(mort.estim.depar.range))
+```
+
+<!-- Subregistration rates range age-->
+
+```{r, Subregistration rates, cache=TRUE}
+
+#### SUBREGISTRATION RATES 2017 - 2019 ####
+
+SINADEF.r<-SINADEF %>% 
+  group_by(AÑO,Departamento,range)%>% 
+  summarise(deaths.sinadef.range.year.region=n())
+
+#variable.names(estimated.mortality.region.edades.FINAL)
+#variable.names(SINADEF.r)
+#table(SINADEF.r$AÑO)
+
+
+```
+
+<!-- COVID deaths-->
+
+``` {r, COVID deaths, cache=TRUE}
+
+####### FALLECIDOS COVID #####
+
+fallecidos_covid <- read.csv("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/fallecidos_covid.csv") 
+
+#variable.names(fallecidos_covid)
+#table(fallecidos_covid$FECHA_FALLECIMIENTO)
+
+fallecidos_covid <- fallecidos_covid %>%
+  mutate(range = case_when(
+    EDAD_DECLARADA < 10 ~ "a0.9",
+    EDAD_DECLARADA >= 10 & EDAD_DECLARADA <20 ~ "a10.19",
+    EDAD_DECLARADA >= 20 & EDAD_DECLARADA <30 ~ "a20.29",
+    EDAD_DECLARADA >= 30 & EDAD_DECLARADA <40 ~ "a30.39",
+    EDAD_DECLARADA >= 40 & EDAD_DECLARADA <50 ~ "a40.49",
+    EDAD_DECLARADA >= 50 & EDAD_DECLARADA <60 ~ "a50.59",
+    EDAD_DECLARADA >= 60 & EDAD_DECLARADA <70 ~ "a60.69",
+    EDAD_DECLARADA >= 70 & EDAD_DECLARADA <80 ~ "a70.79",
+    EDAD_DECLARADA >= 80 ~ "a80")) 
+
+#
+fallecidos_covid.l<-fallecidos_covid %>%
+  mutate (FECHA_FALLECIMIENTO=as.Date(FECHA_FALLECIMIENTO,"%d/%m/%y"),
+          week = isoweek(FECHA_FALLECIMIENTO)) %>%
+    group_by(DEPARTAMENTO,week)%>%summarise(Covid_deaths= n())
+
+colnames(fallecidos_covid.l)[1]<-"Departamento"
+
+
+```
+
+<!-- completness rate both paths: GBD and INEI-->
+
+```{r, under-registration expected deaths, cache=TRUE}
+
+#table(SINADEF.r$AÑO)
+#table(estimated.mortality.region.edades.FINAL$Año)
+
+
+sub.registr.edad<-SINADEF.r %>% mutate(AÑO=as.numeric(AÑO))%>%filter(AÑO==2018 | AÑO==2019)%>%
+  left_join(estimated.mortality.region.edades.FINAL,
+            by=c("Departamento","range","AÑO"="Año"))%>%
+  group_by(AÑO,model.pop,model.mort,range,Departamento)%>%
+   mutate(sub.low = ifelse(!is.na(mort.propagate.lower),                                                                        mean(deaths.sinadef.range.year.region)/mean(mort.propagate.lower),
+                           NA))%>%
+  mutate(sub.mean=mean(deaths.sinadef.range.year.region)/mean(mort.estim.edades.f),
+         sub.up=mean(deaths.sinadef.range.year.region)/mean(mort.propagate.upper)) %>%
+  dplyr::select(AÑO,range,Departamento,deaths.sinadef.range.year.region,
+         mort.estim.edades.f,mort.propagate.lower,
+         mort.propagate.upper,sub.mean,
+         sub.low,sub.up)
+
+sub.registr.GBD<-SINADEF.r %>% mutate(AÑO=as.numeric(AÑO))%>%filter(AÑO==2018 | AÑO==2019)%>%
+  left_join(fc_GBD.departamento,
+            by=c("Departamento","range","AÑO"="year"))%>%
+  group_by(AÑO,.model,Departamento)%>%
+  mutate(sub.mean=mean(deaths.sinadef.range.year.region)/mean(mort.estim.depar.range),
+         sub.low=mean(deaths.sinadef.range.year.region)/mean(mort.estim.depar.range.lower),
+         sub.up=mean(deaths.sinadef.range.year.region)/mean(mort.estim.depar.range.upper)
+         ) %>%
+  dplyr::select(AÑO,range,Departamento,deaths.sinadef.range.year.region,
+         mort.estim.depar.range,mort.estim.depar.range.lower,
+         mort.estim.depar.range.upper,sub.mean,
+         sub.low,sub.up)
+
+
+```
+
+<!-- Excess of mortality-->
+
+``` {r excess of registered deaths sinadef covid 23 june, cache=TRUE}
+
+SINADEF.ts<-SINADEF %>% 
+  mutate(FECHA = as.Date(FECHA, "%Y-%m-%d")) %>%
+  group_by(AÑO)%>%
+  mutate(week = isoweek(FECHA)) %>% 
+  ungroup()%>%
+  group_by(AÑO,Departamento,week)%>% summarise(deaths=n())
+
+mean_deaths <- SINADEF.ts %>% 
+  filter(AÑO==2018 | AÑO==2019 ) %>% 
+  group_by(Departamento, week) %>% 
+  summarise(Mean_deaths = deaths %>% mean() %>% round()) %>% 
+  ungroup() 
+
+deaths2 <- SINADEF.ts %>%  
+  left_join(mean_deaths, by = c("Departamento", "week")) %>% 
+  mutate(Excess_deaths = deaths - Mean_deaths) 
+
+deaths3 <- deaths2 %>% 
+  filter(AÑO == 2020 & week >= 12 & week<=28) %>%  #chequear numero de semana
+  group_by(Departamento) %>% 
+  mutate(Cum_mean_deaths = cumsum(Mean_deaths),
+         Cum_excess_deaths = cumsum(Excess_deaths),
+         Max_week = max(week),
+         Max_excess_deaths = max(Excess_deaths)) %>% 
+  top_n(1, week) %>%
+  mutate(ExcessRatio = round(100*Cum_excess_deaths/Cum_mean_deaths, 1)) %>% 
+  dplyr::select(Departamento, AÑO, week,
+         ExcessRatio, Max_week, Max_excess_deaths,Cum_mean_deaths,Cum_excess_deaths) %>% 
+  left_join(deaths2, ., by = c("AÑO", "week", "Departamento"))
+
+deaths3$AÑO<-as.numeric(deaths3$AÑO)
+fallecidos_covid.l$AÑO<-2020
+
+deaths4 <- deaths3 %>% 
+  left_join(fallecidos_covid.l, by = c("Departamento", "AÑO", "week"))
+
+```
+
+
+```{r, causal impact per region}
+
+
+#fallecidos_covid.l%>%group_by(Departamento) %>% slice_max(1) %>% arrange(week) %>% print(n=25)%>%ungroup()%>% summarise(m=mean(week)) 
+
+#
+SINADEF.causal<-SINADEF %>%  arrange(Departamento)%>%
+  mutate(FECHA = as.Date(FECHA, "%Y-%m-%d")) %>%
+  filter(AÑO==2020)%>%
+  mutate(week = isoweek(FECHA)) %>% 
+  ungroup()%>%
+  group_by(Departamento,week)%>% 
+  summarise(deaths=n())%>% dplyr::select(deaths,week,Departamento)%>%
+  group_by(Departamento)%>% dplyr::select(deaths,week,Departamento)
+
+pre.period <- c(2,15)
+post.period <-c(16,28) #chequear numero de semana
+
+cac<-SINADEF.causal %>% group_by(Departamento)%>%
+  group_map(~CausalImpact(.[1:2], pre.period, post.period, model.args = list(niter = 5000)))
+
+Depa<-unique(SINADEF.causal$Departamento)
+
+cac1 = do.call("rbind", lapply(cac, "[[", 2))
+
+cac1 =cac1 %>% dplyr::filter(row_number() %% 2 == 1)
+
+cac1$Departamento<-Depa
+
+#cac1%>%summarise(s=sum(Pred),l=sum(Pred.lower),u=sum(Pred.upper))
+
+###
+lamba<-SINADEF.causal %>% filter(Departamento=="CUSCO")#
+
+lamba.ca<-CausalImpact(lamba[1:2], pre.period, post.period,model.args = list(niter = 5000))
+
+#summary(lamba.ca)
+
+#plot(lamba.ca, c("original", "pointwise"))
+
+```
+
+```{r, excess mortality: registered + not registered + excess not registered INEI, cache=TRUE}
+
+sub.regis.range<-sub.registr.edad%>%filter(AÑO==2018 | AÑO==2019)%>%
+  group_by(model.pop,model.mort,Departamento,range)%>%
+  summarise(complet.rate.mean=mean(sub.mean),
+            complet.rate.low=mean(sub.low),
+            complet.rate.up=mean(sub.up),
+            deaths.sinadef.range.year.region=mean(deaths.sinadef.range.year.region,na.rm = T),
+            mort.estim.edades.f=mean(mort.estim.edades.f,na.rm = T),
+            mort.propagate.lower=mean(mort.propagate.lower,na.rm = T),
+            mort.propagate.upper=mean(mort.propagate.upper,na.rm = T))  
+            
+fallecidos_covid.r.l<-fallecidos_covid %>%
+  mutate (FECHA_FALLECIMIENTO=as.Date(FECHA_FALLECIMIENTO,"%d/%m/%y"),
+          week = isoweek(FECHA_FALLECIMIENTO)) %>%
+    group_by(DEPARTAMENTO,range)%>%summarise(Covid_deaths= n())
+
+SINADEF.ts.range<-SINADEF %>% 
+  mutate(FECHA = as.Date(FECHA, "%Y-%m-%d")) %>%
+  group_by(AÑO)%>%
+  mutate(week = isoweek(FECHA)) %>% 
+  ungroup()%>%
+  group_by(AÑO,Departamento,week,range)%>% summarise(deaths.sinadef=n())
+
+mean_deaths.range <- SINADEF.ts.range %>% 
+  filter(AÑO==2018 | AÑO==2019 & Departamento !="LAMBAYEQUE") %>% 
+  group_by(Departamento, week,range) %>% 
+  summarise(Mean_deaths.sinadef = mean(deaths.sinadef)) %>% 
+  ungroup() 
+
+mean_deaths.range.lamba <- SINADEF.ts.range %>% 
+  filter(AÑO==2019 & Departamento=="LAMBAYEQUE") %>% 
+  group_by(Departamento, week,range) %>% 
+  summarise(Mean_deaths.sinadef = deaths.sinadef %>% mean() %>% round()) %>% 
+  ungroup() 
+
+mean_deaths.range<-mean_deaths.range%>%full_join(mean_deaths.range.lamba)
+
+deaths2.range <- SINADEF.ts.range %>%    
+  left_join(mean_deaths.range, by = c("Departamento", "week","range")) %>% 
+  mutate(excess_deaths = deaths.sinadef - Mean_deaths.sinadef)  %>% 
+  filter(AÑO == 2020 & week >= 12 & week<=28) %>%  #chequear numero de semana
+  group_by(Departamento,range,week) %>%
+  summarise(excess_deaths=sum(excess_deaths,na.rm = T),
+            deaths.sinadef=sum(deaths.sinadef,na.rm = T),
+            Mean_deaths.sinadef=mean(Mean_deaths.sinadef,na.rm = T))
+
+
+#deaths2.range%>%ungroup()%>%summarise(e=sum(excess_deaths,na.rm = T),                                      t=sum(deaths.sinadef,na.rm = T))
+
+#variable.names(sub.regis.range)
+#variable.names(fallecidos_covid.r.l)
+#variable.names(deaths2.range)
+
+FINAL<-deaths2.range%>%
+  left_join(fallecidos_covid.r.l,by=c("Departamento"="DEPARTAMENTO","range"))%>%
+  left_join(sub.regis.range)%>% filter(!is.na(model.pop))
+
+tateti<-FINAL%>%group_by(Departamento,model.pop,model.mort,range,
+                         complet.rate.mean,complet.rate.low,complet.rate.up,
+                         mort.estim.edades.f,mort.propagate.lower,mort.propagate.upper,
+                         Covid_deaths)%>%
+  summarise(excess_deaths.sum=sum(excess_deaths),
+            deaths.sinadef=sum(deaths.sinadef,na.rm=T),
+            ratio.covid.tot=mean(Covid_deaths)/mean(deaths.sinadef),
+            Mean_deaths.sinadef=sum(Mean_deaths.sinadef,na.rm = T))
+
+
+#tateti%>% group_by(Departamento) %>% filter(model.pop=="arima" & model.mort=="arima") %>%summarise(e=sum(excess_deaths.sum,na.rm = T), r=sum(ratio.covid.tot,na.rm = T)) %>% print(n=25) %>%summarise(a=sum(e))
+
+
+tateti<-tateti%>%group_by(model.pop,model.mort,Departamento)%>%
+  mutate(sd=sd(excess_deaths.sum,na.rm = T),
+         se=sd/(sqrt(n())))
+
+
+tateti<-cac1%>%dplyr::select(p,RelEffect,RelEffect.lower,RelEffect.upper,Departamento)%>%
+  right_join(tateti)
+
+#variable.names(tateti)
+         
+tateti<-tateti%>%group_by(Departamento,model.pop,model.mort,range)%>%
+  mutate(
+    excess.total.mean=case_when(
+         p>=.05 | excess_deaths.sum < 0 ~
+            excess_deaths.sum,
+        p<.05 & excess_deaths.sum > 0  ~
+           excess_deaths.sum+((1-complet.rate.mean)*excess_deaths.sum)),
+   excess.total.low=case_when(
+        p>=.05 | excess_deaths.sum < 0 ~
+            excess_deaths.sum -(1.96*se),
+        p<.05  & excess_deaths.sum > 0 ~
+            excess_deaths.sum+((1-complet.rate.low)*excess_deaths.sum)),
+   excess.total.up=case_when(
+       p>=.05 | excess_deaths.sum < 0 ~
+            excess_deaths.sum+(1.96*se),
+        p<.05 & excess_deaths.sum > 0 ~
+            excess_deaths.sum+((1-complet.rate.up)*excess_deaths.sum))
+        )
+
+#variable.names(tateti)
+
+```    
+
+```{r,  excess mortality: registered + not registered + excess not registered GBD, cache=TRUE}
+#variable.names(sub.registr.GBD)
+
+sub.registr.GBD.range<-sub.registr.GBD%>%filter(AÑO==2018 | AÑO==2019)%>%
+  group_by(.model,Departamento,range)%>%
+  summarise(complet.rate.mean=mean(sub.mean,na.rm = T),
+            complet.rate.low=mean(sub.low,na.rm = T),
+            complet.rate.up=mean(sub.up,na.rm = T),
+            mort.estim.depar.range=mean(mort.estim.depar.range,na.rm = T),
+            mort.estim.depar.range.lower=mean(mort.estim.depar.range.lower,na.rm = T),
+            mort.estim.depar.range.upper=mean(mort.estim.depar.range.upper,na.rm = T))
+
+FINAL2<-sub.registr.GBD.range%>%
+  left_join(fallecidos_covid.r.l,by=c("Departamento"="DEPARTAMENTO","range"))%>%
+  left_join(deaths2.range)%>%filter(!is.na(.model))
+
+#variable.names(FINAL2)
+
+tateti2<-FINAL2%>%group_by(Departamento,.model,range,
+                         complet.rate.mean,complet.rate.low,complet.rate.up,
+                         mort.estim.depar.range,
+                         mort.estim.depar.range.lower,
+                         mort.estim.depar.range.upper,Covid_deaths)%>%
+  summarise(excess_deaths.sum=sum(excess_deaths),
+            deaths.sinadef=sum(deaths.sinadef,na.rm=T),
+            ratio.covid.tot=mean(Covid_deaths)/mean(deaths.sinadef))
+
+
+tateti2<-tateti2%>%group_by(.model,Departamento)%>%
+  mutate(se=sd(excess_deaths.sum,na.rm = T)/sqrt(n()))
+
+tateti2<-cac1%>%dplyr::select(p,RelEffect,RelEffect.lower,RelEffect.upper,Departamento)%>%
+  right_join(tateti2)
+         
+tateti2<-tateti2%>%group_by(Departamento,.model,range)%>%
+    mutate(
+    excess.total.mean=case_when(
+           p>=.05 | excess_deaths.sum < 0   ~ excess_deaths.sum,
+           p<.05 & excess_deaths.sum > 0  ~ excess_deaths.sum+((1-complet.rate.mean)*excess_deaths.sum)),
+   excess.total.low=case_when(
+             p>=.05 | excess_deaths.sum < 0  ~  excess_deaths.sum -(1.96*se),
+        p<.05  & excess_deaths.sum > 0~ excess_deaths.sum+((1-complet.rate.low)*excess_deaths.sum)),
+   excess.total.up=case_when(
+            p>=.05 | excess_deaths.sum < 0 ~ excess_deaths.sum+(1.96*se),
+              p<.05  & excess_deaths.sum > 0 ~ excess_deaths.sum+((1-complet.rate.up)*excess_deaths.sum)
+            )
+   )
+
+```
+
+<!-- Text starts here-->
+
+# Introduction
+
+This tutorial provides a step-by-step guide for the generation of robust excess mortality estimates. Excess mortality estimates the number of additional deaths occurring over a given time period under specific conditions (in this case, the presence of COVID-19), compared to the number of deaths we might reasonably expect for the same period, based on historical data. This captures both deaths directly attributed to COVID-19 and those resulting less directly from the pandemic (such as conditions that go untreated due to reduced access to health services). Together, these provide a complete view of the mortality impact of the pandemic over a specific period of time [@Leon2020].
+
+As part of the tutorial, we provide an example from Peru, one of the countries that has been most affected by the pandemic to date. Additionally, we pay particular attention to patterns of excess deaths by age groups, given the strong association between old age and risk of COVID-19 mortality. As of 13 July 2020, official data report 12,054 deaths directly caused by COVID-19 since the pandemic arrived in Peru on March 6th. Of these, 8,354 were reported to have been people aged 60 or more. Our case study will provide a check on the robustness of these official data, as well as an estimate of excess deaths in Peru not reported as caused by COVID-19.
+
+# Data analysis framework{#data}
+
+Data on mortality are usually collected and reported by government agencies such as the civil registries, statistical or health agencies and data collection responsibilities may be divided between them. This reflects the complexity of registering deaths, where medical, legal, administrative, technological cultural factors are intertwined. As a result, there is a significant amount of under-registration of deaths and misidentification of its causes. Also death registration may not occur in a timely way, which further impedes analysis.
+
+Figure \@ref(fig:circles) sets out a data framework required for estimating excess mortality in the context of COVID-19 pandemic. This shows five interlinked layers of information that have are required. Analysis should start with the outer layer, which refers to the total population, and then proceed inwards, following the arrow.
+
+The first layer refers to disaggregated population estimates derived from population projections and/or census data. Obtaining good population estimates may seem a very simple process, but it is not without challenges, as will be shown below.
+
+The second layer refers to numbers of deaths. Due to incomplete death registration in most low and middle-income countries, mortality data are usually derived from expected deaths based on demographic projections and are measured in terms of death counts and mortality ratios. Mortality estimations are usually inconsistent between different sources reliability and availability of data [@Adair2018] and because population projections vary significantly.
+
+The third layer refers to deaths officially registered by different agencies such as hospitals, health professionals or other civil and community authorities. 
+The fourth layer refers to the pandemic itself and provides death whose cause is officially registered as COVID-19.
+
+The fifth layer refers any deaths that were either directly caused by COVID-19 or were more indirectly caused by the pandemic. These include both those deaths that are reported and those not included in official counts, to provide an estimate of excess mortality during the pandemic.
+
+``` {r circles, fig.align='center', fig.height=3, fig.width=3, fig.cap="Data framework analysis - Excess of mortality", warning=FALSE}
+
+circles <- data.frame(
+  y0 = c(5.2,3,4,5,6),
+  x0 = c(3,3,-1,0,0),
+  r = c(2,3,3.5,5,8))
+
+fill <- c("#FFDB6D", "#C4961A", "#F4EDCA", 
+                "#D16103", "#C3D7A4")
+
+ggplot(data = circles) +
+  geom_circle(aes(x0 = x0, y0 = y0, r = r, fill=fill,colour = fill),alpha=.1)+ theme_bw()+
+ theme(panel.border = element_blank(), panel.grid.major = element_blank(),
+panel.grid.minor = element_blank(), axis.line = element_blank(),legend.position = "none",
+axis.title =  element_blank(),axis.ticks = element_blank(),
+axis.text = element_blank())+
+     annotate("text", x = c(3,3,-2,-2,-2), y = c(5,2.5,6,8,13),size=2,
+              label = c("registered COVID-19",
+                        "COVID-19 deaths - Excess mortality", "registered deaths",
+                        "expected deaths","population"))+
+        annotate("segment", x = -1, xend = 3.3, y = 13, yend = 3,
+                 colour = "red",
+                 size=.5,    alpha=0.5, arrow=arrow(),linetype=2)+
+  labs(caption = "Source: Author's own")
+
+
+```
+
+As seen in Figure \@ref(fig:circles), there are different potential sources of mismatch between the registration and the identification of deaths. These are summarised in Table \@ref(tab:bias). Both the potential false negatives shown in Table \@ref(tab:bias) are resolved by the excess of mortality analysis, since it captures deaths indirectly related to the pandemic. It is, however, possible that a number of deaths during the period of interest are due to causes that do not usually occur with the same frequency in previous years (such as an outbreak of an infectious disease like dengue or a natural disaster). These causes may then be wrongly attributed to COVID-19 and the pandemic. This shows the importance of supplementing statistical data with contextual epidemiological information from the field (perhaps obtained from local health professionals). If substantial numbers of deaths are potentially due to causes unrelated to the pandemic and unrelated to previous years, it will be necessary to develop an adjusted model of analysis (a method not dealt with in this tutorial). 
+
+\begin{table}[H]
+  \centering
+  \caption{Possibles sources of bias in estimation of excess of deaths by COVID-19}
+  \label{tab:bias}
+  \begin{tabular}{ccc}\toprule
+                            & Death by COVID-19 & Death by other causes \\ 
+Registered as COVID-19      & OK                & False positive        \\ \midrule
+Not registered as COVID-19  & False negative    & False positive        \\  
+Expected but not registered & False negative    & -                     \\  \bottomrule
+\end{tabular}
+\end{table}
+
+# Empirical strategy{#emp}
+
+Our estimation of excess mortality utilises time-series analysis applying univariate models to both forecast missing values prior to 2020 and to forecast values for 2020. Time series models assume a linear relationship between certain variables of interest  $y$, such as the mortality rate, expected mortality or registered mortality, both over a specific period of time $t$ and in relation to previous values of the same variable, $y_{t-n}$. Two different models are used in forecasting population and mortality [@Hyndman2019;@Li2020], namely, non-seasonal Autoregressive integrated moving average models ($\text{ARIMA}$) and a Random walk model with drift ($\text{RWD}$). 
+
+ARIMA models combine three elements: autoregressions ($\text{AR}$), differencing ($\text{I}$), and moving averages ($\text{MA}$). The $\text{AR}$ refers to linear regressions of the dependent variable against itself on previous periods of time. The $\text{I}$part refers to the process of transforming data into a stationary time series, where the mean, variance, and autocorrelation become constant over time. This is needed to eliminate seasonality and longer-run data trends. Finally, the $\text{MA}$ indicates the addition of past forecast errors to the model. Combining these three features provides the best possible model fit. The formal notation for the model is given by:
+
+\begin{equation}
+\label{eq:1}
+   y'_{t}=c+\phi_{1}y'_{t-1}+\phi_{2}y'_{t-2}+\cdots+\phi_{p}y'_{t-p}+\theta_{1}\epsilon_{t-1}+\cdots+\theta_{q}\epsilon_{t-q} +\epsilon_{t}
+\end{equation}
+
+Where $y$ is the predicted value at time $t$, $c$ refers to the average of changes between consecutive observations, $\phi$ represent autoregressive parameters, $\theta$ represent the moving average parameters and $\epsilon_{t}$ is the model error term, known as white noise. The variance of the error term $\epsilon_{t}$ enables us to compute confidence intervals for the forecasted values.
+
+On other hand, the $\text{RWD}$ is a simple model where the forecasted values increase or decrease over time depending on changes derived from consecutive observations. The amount of change over time (called the drift) is set by the average change seen in the historical time series data. The notation is:
+
+\begin{equation}
+\label{eq:2}
+  y_{t}=c+y_{t-1}+\epsilon_{t}
+\end{equation}
+
+In the case that $c$ is positive, then the average change is an increase in the value of $y_{t}$, while the opposite occurs when $c<0$. 
+
+Non-seasonal $\text{ARIMA}$ models are generally classified as $\text{ARIMA} (\text{p},\text{d},\text{q})$, where parameter $\text{p}$ refers to number of time lags of the autoregressive model, $\text{d}$ is the number of times the data have been differentiated, and \text{q} is the number of lagged values for the error term that are added or subtracted to $y$. The $\text{RWD}$ is a special case of $\text{ARIMA}$, equivalent to a $\text{ARIMA} (0,1,0)$ where $\phi_{1}=1$ and $c\neq0$ in equation \@ref(eq:1).
+
+Once the model parameters from \@ref(eq:1) and \@ref(eq:1) are estimated, we forecast mean values up to the year 2020. As we are dealing with uncertainty, we estimate a range of values which are likely to include the parameter value with a specific level of confidence (in this case, 95%).
+
+The estimated parameter 95% CI interval is given by $\hat y_{t+h|T}\pm 1.96 \sqrt{(\hat\sigma_h)}$ where $\hat y_{t+h|T}$ are the predicted values on future periods $h$ and $\hat\sigma$ is the standard deviation of the residuals. In case of the first forecast, the 95% CI is $\hat y_{t+1|T}\pm 1.96 \hat\sigma_h$.
+
+Finally, to deal with the propagation of uncertainty when we combine estimations and their confidence intervals, we adjust the residual standard deviations $\sigma$ such as in:
+
+\begin{equation}
+\label{eq:3}
+  \sigma(\hat{\beta'} * \hat{\beta''})=\sqrt{(\frac{\hat{\sigma_{\beta'}}}{\hat{\beta'}})^2+
+  (\frac{\hat{\sigma_{\beta''}}}{\hat{\beta''}})^2}
+\end{equation}
+
+Where $\beta'$ and $\beta''$ represent any pair of forecasted parameters. Finally, in order to check the robustness of the ex-post forecasting, when available, we compare forecasted values with values in official statistics to establish the accuracy of the predictions. 
+
+We use the `R` package [`fable`](https://fable.tidyverts.org/), which allows for automated searches through the model space to identify the best ARIMA model from a set of different $\text{p}$, $\text{d}$ and $\text{q}$ parameters, which lowest information criteria, in this case, the Akaike information criterion corrected for small sample sizes. In all cases, model parameters and fit are found in the Appendix.
+
+# Application: Peru{#Peru}
+
+Peru has three natural regions: a narrow dry coast in the west, the Andean region and a large rainforest region to the east, which is the less densely populated. Administratively, it is divided into 25 regions (see Figure \@ref(fig:map)).
+
+``` {r map, message=FALSE, fig.align='center', fig.height=4, fig.cap="Map of Peru: administrative subdivisions"}
+
+areas <- st_read("C:/Users/LUCAS/Desktop/Excess.deaths.PERU/peru_departamental_simple.geojson", quiet=T)
+
+ggplot(areas) +
+  geom_sf() +
+   geom_sf_text(aes(label = NOMBDEP),size=1.3)+
+  theme(panel.background = element_blank(),
+        axis.title = element_blank(),axis.text = element_text(size=7))+
+  labs(caption = "Source: https://github.com/juaneladio/peru-geojson")
+  
+```
+
+The application of the methodological approach is illustrated in the case of measuring COVID-19 deaths over months of March to June 2020 in Peru. Peru is an interesting case of study for different reasons. First, anonymised individual level data for mortality and COVID administrative data is on the public domain. Second, there has been a recent change in the death notification system, which allows for comparing spatio-temporal trends on deaths registration [@CRVS2018]. Finally, official statistics and projections at sub-level and disaggregated by age groups are not update or available. This feature, common across many countries, allows us to apply our method towards addressing missing data points.  
+
+Data come from the [National Statistics Agency (INEI)](https://www.inei.gob.pe/)and the [Ministry of Health (MoH)](https://www.minsa.gob.pe/reunis/). Table \@ref(tab:data) shows missing data, which we will therefore need to estimate to be able compute excess mortality. National level data are available and up-to-date, and can therefore serve as a benchmark for our projections. However, disaggregated local data are not available. Mortality projections were recently adjusted at the [national level](https://www.inei.gob.pe/media/MenuRecursivo/publicaciones_digitales/Est/Lib1715/Libro.pdf), and are not consistent with official data for the [regional level](http://webapp.inei.gob.pe:8080/sirtod-series/). Consequently, we also apply a second source of mortality data, the Global Burden of Disease study (GBD), which for Peru includes deaths by sex, range of age and causes from 2008 to 2017 [@Dicker2018].  
+
+\begin{table}[H]
+  \centering
+   \caption{Data availability by categories and time} \label{tab:data}
+    \begin{tabular}{ccccccc}\toprule
+Data                                                 & Level                            & Prior to 2016 & 2017          & 2018          & 2019          & 2020    \\ \midrule
+Population estimations                                          & National                       & yes           & yes           & yes           & yes           & yes     \\ 
+Population estimations                                           & Regional                     & not available & not available & not available & not available & yes     \\ 
+Expected mortality                                   & National                       & yes           & yes           & yes           & yes           & yes     \\ 
+Expected mortality                                   & Regional                       & not available & not available & not available & not available & missing \\ 
+Registered mortality                                 & National                      & not available & yes           & yes           & yes           & yes     \\ 
+Registered mortality                                 & Regional                     & not available & yes           & yes           & yes           & yes     \\ 
+COVID mortality                                      & National                      & -             & -             & -             & -             & yes     \\ 
+COVID mortality                                      & Regional                    & -             & -             & -             & -             & yes     \\ 
+\multicolumn{1}{l}{Deaths - Global Burden disease} & \multicolumn{1}{l}{National} & yes           & yes           & yes           & yes           & yes     \\ \bottomrule
+\end{tabular}
+\end{table}
+
+
+
+## First layer: Population
+
+### Step 1: Finding and knowing the data 
+
+
+Data on population are usually derived from a combination of periodic census data and projections based on fertility, mortality, migration, life expectancy rates, among other things.
+
+In 2020 INEI estimates the population of Peru was around 32.8 million, with a growth rate of around 1% year. Since older people account for the majority of COVID-19 deaths falls, it is important to understand the evolution of population age structure over time.  Figure \@ref(fig:plotpopulation) shows how the population aged 65 and over has significantly increased over the last two decades, with yearly growth rates of over 2.5%. By contrast, younger cohorts show a declining growth rate, and an absolute decline from 2000.
+
+``` {r, plotpopulation, fig.align='center', fig.height=3, fig.cap="Yearly growth rate by selected range of age - Peru"}
+
+pa.na<-pob.nac.ed.sex.1950.2020%>%  group_by(range)%>% summarise(across( `1950`:`2020`, sum)) %>%
+  pivot_longer(cols = `1950`:`2020`)%>%mutate(Previous_Year = lag(value, 1), Change = value - Previous_Year, Percent_Change = Change/Previous_Year*100)
+
+pa.na$range<-as.factor(pa.na$range)  
+
+pa.na$range<-factor(pa.na$range,levels = c("0-4", "5-9" , "10-14", 
+                                           "15-19", "20-24",
+                                           "25-29", "30-34",
+                                           "35-39", "40-44",
+                                           "45-49", "50-54",
+                                           "55-59", "60-64",
+                                           "65-69", "70-74",
+                                           "75-79", "80+"))
+  
+ggplot() +
+geom_line(data=subset(pa.na,name!="1950" & (range=="0-4" |range=="5-9" | range=="10-14" | 
+                                              range=="15-19"    |      range=="65-69" |
+                                              range=="70-74"| range=="75-79" | range=="80+")),
+          aes(x = name, y = Percent_Change,group=range,colour=range))+
+    theme(axis.text.x = element_text(size=10, angle=45),legend.text = element_text(size = 6),
+        legend.key.size = unit(1,"line"))+
+  xlab("Years") + 
+  ylab("Year growth rate (%)")+
+  labs(caption = "Source: INEI")+
+  labs(colour="Range of age")+theme(panel.background = element_blank())+
+  scale_y_continuous(labels = scales::comma)+
+   scale_x_discrete(breaks=seq(1950,2020,10))+
+ geom_hline(yintercept=0, linetype="dashed", color = "darkorange")+
+  scale_color_brewer(palette="Paired") 
+
+```
+
+### Step 2: Analysis and forecasting
+
+In Peru there are no official population estimates disaggregated by regions or age. Therefore, we use the two models $\text{ARIMA}$ and $\text{RWD}$, to estimate and forecast population by regions and age group up to year 2020, $\widehat{\text{pop}}$. We compare aggregated forecast values against official population projections by INEI. Model parameters and residual analysis can be found in Section \@ref(Appendix).
+
+Figure \@ref(fig:popmodels) shows small differences between the aggregated forecasted values and INEI projections for 2020 across the different age groups. The mean difference is -1.2% and -0.7% for the $\text{RWD}$ and $\text{ARIMA}$ models, respectively. The interquartile range also shows lower values, 5.95% and 4.0%, which suggests predicted values are close to official estimates in all cases. The analysis of outliers shows an overestimate of 82,496 people aged 30-39 years in Lima, which represents a difference of 5% between predicted and official values. To understand the magnitude and potential bias of this gap, we compute the number of deaths represented by that population. As the mortality rate of Peru is 5.8 deaths per thousand, this represents 14.2 overestimated deaths. The plot shows that the $\text{RWD}$ model tends to underestimate official figures: this will be of use in the analysis, since official estimates have been adjusted downwards in recent times.
+
+``` {r, popmodels, fig.align='center', fig.height=3,fig.cap="Difference between population estimates for 2020 by forecasting model (ARIMA and RWD drift) by age group"}
+#compare.estim.fit.edades%>%group_by(.model)%>%  summarise(mean=mean(dif,na.rm=T)*100,             sd=sd(dif,na.rm=T)*100,             iqr=IQR(dif,na.rm = T)*100)
+
+#compare.estim.fit.edades%>%group_by(.model)%>%summarise(mean=mean(abs.dif,na.rm=T),             sd=sd(abs.dif,na.rm=T),iqr=IQR(abs.dif,na.rm = T))
+
+#ggplot(compare.estim.fit.edades)+geom_density(aes(x=dif,fill=.model),                                              alpha=.3)
+
+#tapply(compare.estim.fit.edades$dif,compare.estim.fit.edades$.model,summary)
+#tapply(compare.estim.fit.edades$dif,compare.estim.fit.edades$.model,sd)
+
+ggplot(compare.estim.fit.edades)+
+  geom_boxplot(aes(x=range,y=dif,colour=.model),
+               alpha=.3)+ theme(axis.text.x = element_text(size=8, angle=45))+
+  xlab("Range of age") + 
+  ylab("% difference")+
+  labs(caption = "Source: Author's own")+
+  labs(colour="Models")+theme(panel.background = element_blank())
+  
+#ggplot(compare.estim.fit.edades)+ geom_boxplot(aes(x=range,y=abs.dif,colour=.model),alpha=.3)
+
+```
+
+```{r, plot estimated population vs INEI}
+pob.regiones.2005.2015.long$year<-as.numeric(pob.regiones.2005.2015.long$year)
+
+#fc_edades.arima%>%group_by(Departamento, model.pop,year)%>% filter(!is.na(model.pop))%>%      summarise(pop.sum=sum(pop.estimated),                                             low.pop.sum=sum(lower.pop),                                               up.pop.sum=sum(upper.pop))%>%   ggplot()+  geom_line(aes(x=year,y=pop.sum,group=model.pop,colour=model.pop))+  geom_errorbar(aes(x=year,y=pop.sum,ymin=low.pop.sum,ymax=up.pop.sum,colour=model.pop))+  facet_wrap(~Departamento,scales = "free")+  geom_line(data=pob.regiones.2005.2015.long,aes(x=year,y=population))
+```
+
+
+
+## Second layer: Expected deaths 
+
+### Step 1: Finding and knowing the data 
+
+Expected mortality gives an overall estimate of deaths over a certain period. It is usually measured by the mortality rate (MR), which shows the number of deaths for a fixed population over a year per 1000 people. 
+
+Figure \@ref(fig:mortalitycountries) shows the evolution of MR over the last two decades in Peru and selected South American countries. In 2018 the expected mortality rate in Peru was 5.83, one of the lowest rates in the region. Peru’s MR has remained stable since 2000, unlike Bolivia (which saw a significant decrease), or Chile (an increase).
+
+```{r, mortalitycountries,fig.align='center', fig.height=3, fig.cap="Mortality rate per 1000 population in selected South American countries from 2000 to 2018"}
+ggplot(cmr.region)+
+  geom_path(aes(x=name,y=rate,group=`Country Name`,colour=`Country Name`),size=1)+ scale_color_brewer(palette="Paired") +
+  labs(caption = "Source: World Bank Data")+
+  theme(axis.text.x = element_text(size=7, angle=45),  legend.key.size = unit(1,"line"))+
+  xlab("Year") + 
+  ylab("Deaths per 1000 of population/year")+
+  labs(colour="Country")+theme(panel.background = element_blank())
+
+```
+
+While Peru’s national MR trend appears to have been stable over the last two decades, a different picture is observed over a longer time period across Departments. Figure \@ref(fig:mortregiones) shows significant falls many regions, such as Amazonas. In urban centres such as Lima and Callao rates are lower and more stable. 
+
+```{r, mortregiones,fig.align='center', fig.height=3,fig.cap="Mortality rate (crude estimates) per 1000 population by region in Peru from 1990 to 2015"}
+ggplot(tibble.mort.regiones)+geom_line(aes(x=Año,y=`Tasa Cruda`,group=Departamento,colour=Departamento))+
+  labs(caption = "Source: Inei")+
+  theme(axis.text.x = element_text(size=10, angle=45),legend.position ="right",
+      legend.title = element_text (size = 10,face="bold"),
+  legend.text = element_text(size = 7))+
+  xlab("Years") + 
+  ylab("Deaths per 1000 of population/year")+theme(panel.background = element_blank())+
+  guides(col = guide_legend(ncol = 1))
+```
+
+
+
+
+### Step 2: Analysis and forecasting
+
+To estimate the expected mortality we need two set of values: namely, the mortality rate for the period of interest, $\text{MR}$  and the $\text{population}$, such as in $\text{MR} = \frac{\text{Deaths}}{\text{population}}$ over a certain period of time.
+
+Data on expected mortality in Peru are more limited than data on population. The INEI only presents projections at the regional level for every 5 years, without disaggregation into age groups. Due to those limitations, we estimate expected mortality by region and age group by using the same analytical tools used above. We compare the aggregation of predicted values with INEI projections for 2020. Model parameters and residual analysis can be found in Section \@ref(Appendix).
+
+Figure \@ref(fig:mortmodels) compares aggregate regional ($\widehat{\text{MR}}$) estimates and INEI’s projected mortality rates for 2020, whereby  $\text{RWD}$  slightly underpredicts rates while $\text{ARIMA}$ shows a less clear pattern and higher gaps between predicted and official figures, especially in regions with higher mortality rates.
+
+```{r,mortmodels,fig.align='center', fig.height=3,fig.cap=" Predicted and projected crude mortality rates by Department - model ARIMA and RWD drift"}
+
+ggplot(compare.mort.reg)+
+  geom_point(aes(x=crm,y=pred.tasa,colour=Departamento,fill=Departamento),
+             alpha=.8) + facet_wrap(~.model) +
+  geom_text(data = dfann, aes(x=x,y=y,label = labl),color="darkgreen",size=3)+
+  geom_abline(linetype="dashed",color = "darkgreen", size=.5)+
+  theme_light()+  theme(legend.position ="none")+
+  labs(caption = "Source: Author's computation based on INEI") +
+  ylab("Predicted deaths/1000 of pop year") + 
+  xlab("Projected deaths/1000 of pop year by INEI")+
+  scale_x_continuous(breaks=seq(3.5, 8.5, .5))+
+  scale_y_continuous(breaks=seq(3.5, 8.5, .5))
+
+```
+
+We then forecast average expected deaths 95% confidence intervals based on previous estimates for population and mortality ratios. We adjust for uncertainty propagation caused by computing values with their respective errors, by computing standard errors following rules of time series data as $\sqrt{\sigma_{h}}$ based on equation \@ref(eq:3), as follows:
+
+\begin{equation}
+   \label{eq:4}
+  \widehat{\text{Deaths}}_{\text{Exp}_\text{INEI}}= \widehat{\text{MR}} * \widehat{\text{pop}} \pm
+   1.96\sqrt{\widehat{\text{MR}}*\widehat{\text{pop}}
+   \sqrt{(\frac{\hat{\sigma}_\text{MR}}{\widehat{\text{MR}}})^2+
+   (\frac{\hat{\sigma}_\text{pop}}{\widehat{\text{pop}}})^2}}
+\end{equation}
+
+Table \@ref(tab:expmort) shows the results of four sets of expected mortality estimates taken from the combination of population and mortality rate forecasts. The average of estimated values falls between 169,557 and 184,680, with a 95% CI ranging from 138,937 to 225,361 under $\text{RWD}$ models to forecast $\widehat{\text{MR}}$ and $\widehat{\text{pop}}$. As previously mentioned, the selection of mortality ratio models strongly influences the range of estimated values, whereas the population models do not lead to large variations.
+
+
+We find the $\text{RWD}$ range of forecasted values coincide with recent INEI projections for expected mortality, which estimate an average of 172,000 deaths across the  [period 2015 - 2020](https://www.inei.gob.pe/media/MenuRecursivo/publicaciones_digitales/Est/Lib1665/libro.pdf). However, earlier more detailed estimates also by [INEI](http://webapp.inei.gob.pe:8080/sirtod-series/)  projected 191,411 deaths for the same year, which is closer to the  $\text{ARIMA}$  models forecasting. This suggests the need to estimate excess mortality using both sets of models.
+
+```{r, expmort}
+
+####Compare with recent mortality estimations####
+
+table.estimation.estimated.mortality<-estimated.mortality.region.edades.FINAL%>% 
+  filter(Año>=2020)%>%
+  group_by(Año,model.mort,model.pop)%>%
+  #filter(Departamento=="LIMA")%>%
+  summarise(exp.mortality=sum(mort.estim.edades.f,na.rm = T),
+            lower.CI.mortality=sum(mort.propagate.lower,na.rm = T),
+            upper.CI.mortality=sum(mort.propagate.upper,na.rm = T))
+
+knitr::kable(table.estimation.estimated.mortality,booktabs = T,format="latex",
+            caption = 'Expected mortality based on population and mortality ratio models')%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+
+#172,000 Perú: Estimaciones y Proyecciones de la Población Nacional, 1950-2070 [https://www.inei.gob.pe/media/MenuRecursivo/publicaciones_digitales/Est/Lib1715/Libro.pdf] - p.39
+```
+
+A second source of expected mortality data is the [GBD](http://ghdx.healthdata.org/gbd-results-tool), which provides expected mortality estimates by age group from 1990 to 2017. In 2017, the GBD estimated 141,759 deaths (95% uncertainty interval 123,632 to 161,881). This suggests the existence of different scenarios, which are more conservative compared to the previous model.
+
+In this case, the forecasting exercise is divided into two steps. First, we disaggregate the number of deaths at the regional level. For that, we use INEI projections, which are highly correlated to registered deaths from SINADEF (r(23)=.993,p<.001). Secondly, we forecast estimated mortality, $\widehat{\text{Deaths}}_{\text{Exp}_\text{GBD}}$, by regions and age group up to 2020 based on the expected values provided by the GBD. The computation of a 95% CI interval for in 2020 is given as follows:
+
+\begin{equation}
+   \label{eq:4b}
+  \widehat{\text{Deaths}}_{\text{Exp}_\text{GBD}}= \widehat{\text{Deaths}_{\text{Exp}_\text{t+h|T}}}\pm 1.96 \sqrt{\hat{\sigma}_{\text{Deaths}_{\text{Exp}_\text{t+h|T}}}}
+\end{equation}
+  
+Where $\widehat{\text{Deaths}_{\text{Exp}_\text{t+h|T}}}$ are the predicted values on future periods $h$ and $\hat\sigma$ is the standard deviation of the residuals. 
+
+```{r, GBD 2008-2017}
+#IHME.GBD_2017.m%>% group_by(year)%>%summarise(s=sum(deaths.GBD),  low.o=sum(deaths.lower.GBD),   upper.o=sum(deaths.upper.GBD))
+```
+
+$\widehat{\text{Deaths}}_{\text{Exp}_\text{GBD}}$ for 2020 falls in a range from 133,504 to 161,805 and 134,133 to 156,715 under the $\text{RWD}$ and $\text{ARIMA}$ models respectively. Table \@ref(tab:gbd) shows how the 95% CI increases significantly for 2020, which implies a greater range of uncertainty.
+
+```{r, gbd}
+
+#variable.names(fc_GBD.departamento)
+gbd<- fc_GBD.departamento %>% group_by(.model,year)%>% 
+  summarise(mean=sum(mort.estim.depar.range),
+            low=sum(mort.estim.depar.range.lower),
+            up=sum(mort.estim.depar.range.upper))
+
+knitr::kable(gbd,booktabs = T,format="latex",
+            caption = 'Forecast of expected mortality based on GBD') %>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+```
+
+
+## Third layer: Registered deaths 
+
+### Step 1: Finding and knowing the data 
+
+There are two sources of registered death data: INEI’s death registry and the MOH’s SINADEF, which has been running since 2017 [@CRVS2018]. SINADEF permits us to assess gaps between expected and registered mortality, and whether these gaps vary over time. However, coverage of SINADEF is not complete, reaching 74.0% of total deaths in 2018. This may be due to challenges of implementing this new system, especially in more remote areas that lack IT equipment and connectivity. The unreliability of SINADEF data at the regional level can be seen in Figure \@ref(fig:SINADEFtsmortalityrange), which shows almost no deaths recorded by SINADEF in Lambayeque in 2019. SINADEF data for Lima appear less inconsistent, and appear to indicate the increased application of the SINADEF system over time.  However, these data do not permit forecasting of registered deaths, since many exogenous factors could influence future figures, and the lack of clear patterns, which characterise stationary time series.
+
+```{r, defunciones regis}
+#defuncionesINEI.long
+
+#SINADEF.r %>% group_by(AÑO) %>% summarise (value=sum(deaths.sinadef.range.year.region))
+
+```
+
+```{r, SINADEFtsmortalityrange,fig.align='center', fig.height=3, fig.cap = "Monthly deaths by age group in Departments of Lambayeque and Lima in 2019"}
+
+# Chequear LAMBAYEQUE
+SINADEF.ts.mortality.range<-SINADEF %>% filter(AÑO==2019)%>%
+mutate(FECHA = as.Date(FECHA, "%Y-%m-%d")) %>%
+group_by(Departamento,range)%>%
+mutate(month = month(FECHA)) %>%
+ungroup()%>%
+group_by(Departamento,month,range)%>% summarise(deaths.ts=n())%>%
+as_tsibble(index=month,key=c(Departamento,range))
+
+SINADEF.ts.mortality.range %>% filter(Departamento=="LAMBAYEQUE"| Departamento == "LIMA") %>%
+  ggplot()+
+  geom_line(data=subset(SINADEF.ts.mortality.range,!is.na(range) &
+                          (Departamento=="LAMBAYEQUE"| Departamento == "LIMA")),
+    aes(x=factor(month),y=deaths.ts,group=range,colour=range))+
+  facet_wrap(~Departamento,scale="free")+
+    labs(caption = "Source: SINADEF")+
+  theme(axis.text.x = element_text(size=10, angle=45))+
+  xlab("Months") + 
+  ylab("Deaths")+theme(panel.background = element_blank())+
+  scale_color_brewer(palette="Paired") 
+
+
+```
+
+### Step 2: Quantification of the completeness of registered deaths
+
+One major gap in mortality estimations is between the number of expected deaths and registered deaths. Quantifying the completeness of a death registration system shows whether coverage is suboptimal. Also, the use of incomplete death registration data to compute excess deaths may under-estimate the true number of excess deaths, which should be adjusted by the registration completeness rate. In this step, we estimate the completeness of registration by regions and age.
+
+For INEI data, we compute the completeness of death registration, $\widehat{\text{Comp.reg}}_{\text{INEI}}$ as a ratio of expected $\text{Deaths}_{\text{Exp}_{\text{INEI}}}$ and registered deaths, $\text{Deaths}_\text{Reg}$, as follows:
+
+\begin{equation}
+  \label{eq:5}
+  \widehat{\text{Comp.reg}}_\text{INEI}= \frac{Deaths_{Reg}}{\widehat{\text{Deaths}}_{\text{Exp}_{\text{INEI}}}}
+\end{equation}
+
+As we are computing this rate combining two previous estimations, we compute a 95% CI addressing the propagation uncertainty based on \@ref(eq:3), as follows:
+
+\begin{equation}
+  \label{eq:6}
+    \widehat{\text{comp.reg}}_\text{INEI}= \frac{\text{Deaths}_\text{Reg}}{\widehat{\text{Deaths}}_{{\text{Exp}}_{\text{INEI}}}}\pm  1.96\sqrt{\widehat{\text{MR}}*\widehat{\text{pop}}\sqrt{(\frac{\hat{\sigma}_\text{MR}}{\widehat{\text{MR}}})^2+(\frac{\hat{\sigma}_\text{pop}}{\widehat{\text{pop}}})^2}}
+\end{equation}
+
+Similarly, the completeness rate based on GBD estimations, $\widehat{\text{Comp.reg}}_\text{GBD}$ is a ratio between registered deaths, $\text{Deaths}_\text{Reg}$ and $\widehat{\text{Deaths}}_{\text{Exp}_\text{GBD}}$, as follows:
+
+\begin{equation}
+  \label{eq:7}
+ \widehat{\text{Comp.reg}}_\text{GBD}= \frac{\text{Deaths}_\text{Reg}}{\widehat{\text{Deaths}}_{\text{Exp}_\text{GBD}}}
+\end{equation}
+
+Unlike the previous case, estimating the 95% CI does not require adjusting for propagation of uncertainty. Therefore, we compute the 95% CI based on the residuals of the time series, $\widehat{\text{Deaths}}_\text{GBD}$, which refers to the forecast values at year 2019, such as in:
+
+\begin{equation}
+  \label{eq:8}
+  \widehat{\text{Comp.reg}}_\text{GBD}=\frac{\text{Deaths}_\text{Reg}}{\widehat{\text{Deaths}}_{\text{Exp}_\text{GBD}}} \pm 1.96\sqrt{\hat{\sigma}_{\text{Deaths}_\text{GBD}}}
+\end{equation}
+
+Figure \@ref(fig:subrates) shows completeness rates and 95% CIs based on the INEI and the GBD drift models for 2019, by region for people aged 60-69. The plot is divided into four levels. Regions in the red area have less than 50% registration; those in the yellow area 50% to 85%; and those in the green area 85% to 115%. An additional gray area for over 115% shows 6 GBD estimations, which suggests GDB expected mortality may be underestimating deaths in comparison to INEI. 
+
+```{r, subrates, fig.align='center', fig.height=5, fig.cap="Estimates of completeness rate of registered deaths from SINADEF in the age group 60-69 years by Department in 2019"}
+
+# caso lambayeque
+
+ggplot()+
+   geom_point(data=subset(sub.registr.edad,AÑO==2019&range=="a60.69"&
+                          model.mort=="drift"&model.pop=="drift"),
+                          aes(y=sub.mean,x=Departamento,colour="model.mort"),
+                         position=position_dodge(width=0.9))+
+  geom_errorbar (data=subset(sub.registr.edad,AÑO==2019&range=="a60.69"
+                          &model.mort=="drift"& model.pop=="drift"),
+                          aes(x=Departamento, ymin=sub.low, ymax=sub.up,colour="model.mort"),
+                          position=position_dodge(width=0.1)) +
+  geom_point(data=subset(sub.registr.GBD,AÑO==2019&.model=="drift" & range=="a60.69"),
+                         aes(x=Departamento,y=sub.mean,colour=".model"))+
+ geom_errorbar (data=subset(sub.registr.GBD,AÑO==2019&.model=="drift" & range=="a60.69"),
+                          aes(x=Departamento, ymin=sub.low, ymax=sub.up,colour=".model"),
+                          position=position_dodge(width=0.1))+
+         theme(axis.text.x = element_text(size=8, angle=60,vjust = .6))+
+  xlab("Regions") + 
+  ylab("Completeness rate (%)")+
+  labs(caption = "Author's calculation based on INEI, GBD and SINADEF")+
+  theme(panel.background = element_blank())+
+ geom_hline(yintercept=1, linetype="dashed", color = "red",size=.5)+
+  geom_hline(yintercept=.70, linetype="dashed", color = "red",size=.5)+
+    geom_hline(yintercept=.50, linetype="dashed", color = "red",size=.5)+
+  scale_y_continuous(labels = percent_format(),
+                     breaks = seq(0, 3, by = .2))+
+  scale_color_manual(name="Completness rate",label=c("GBD","INEI-drift/drift"),
+       values=c("model.mort"="darkblue", ".model"="darkorange"))+
+   annotate("rect", xmin = 0, xmax = 26, ymin = .85, ymax = 1.15,fill="green",
+        alpha = .2)+
+     annotate("rect", xmin = 0, xmax = 26, ymin = .5, ymax = .85,fill="yellow",
+        alpha = .2)+
+      annotate("rect", xmin = 0, xmax = 26, ymin = 0, ymax = .5,fill="red",
+        alpha = .2)+
+      annotate("rect", xmin = 0, xmax = 26, ymin = 1.15, ymax = 1.8,fill="gray",
+        alpha = .2)+
+  theme(legend.position ="bottom")+ guides(col = guide_legend(ncol = 2))
+
+
+#
+#  ggplot()+   geom_point(data=subset(sub.registr.edad,AÑO==2019&range=="a80"&                          model.mort=="drift"&model.pop=="drift"),                          aes(y=sub.mean,x=Departamento,colour="model.mort"),                         position=position_dodge(width=0.9))+  geom_errorbar (data=subset(sub.registr.edad,AÑO==2019&range=="a80"                          &model.mort=="drift"& model.pop=="drift"), aes(x=Departamento, ymin=sub.low, ymax=sub.up,colour="model.mort"),                          position=position_dodge(width=0.1)) +  geom_point(data=subset(sub.registr.GBD,AÑO==2019 &.model=="drift"),  aes(x=Departamento,y=sub.mean,colour=range))+ geom_errorbar (data=subset(sub.registr.GBD,AÑO==2019 &.model=="drift"),                          aes(x=Departamento, ymin=sub.low, ymax=sub.up,colour=range),                          position=position_dodge(width=0.1))+   theme(axis.text.x = element_text(size=8, angle=60,vjust = .6))+  xlab("Regions") +   ylab("Completeness rate (%)")+  labs(title = "Completeness rate of registered deaths - 2019 - SINADEF vs projected mortality INEI and GBD expectations per region",caption = "Author's calculation based on INEI, GBD and SINADEF")+  theme(panel.background = element_blank())+  geom_hline(yintercept=1, linetype="dashed", color = "red",size=.5)+  geom_hline(yintercept=.75, linetype="dashed", color = "red",size=.5)+    geom_hline(yintercept=.50, linetype="dashed", color = "red",size=.5)+  scale_y_continuous(labels = percent_format(),                     breaks = seq(0, 8, by = .2))#+  scale_color_manual(name="Completness rate",label=c("GBD","INEI-drift"),       values=c("model.mort"="darkblue", ".model"="darkorange"))
+
+```
+
+
+
+## Fourth layer: Deaths registered as COVID-19
+
+### Step 1: Finding and knowing the data 
+
+By July 13 there had been 12,504 deaths registered as caused by COVID-19 according to the [MoH](https://covid19.minsa.gob.pe/sala_situacional.asp). Figure \@ref(fig:falcovid) shows three periods of daily reported deaths. An exponential increase between March and April, a significant decrease during May and a sudden increase during June, with figures stabilizing at around 170 to 200 reported deaths per day. It is beyond the scope of this analysis to address the causes of the apparent decline in May, which may have been caused by different factors such as reporting patterns, the effects of quarantine and curfews or the under-identification of COVID-19 deaths. This erratic pattern shows the importance of computing excess mortality as a more robust approach.
+
+```{r, falcovid, message=FALSE, warning=FALSE,fig.align='center',fig.height=3,fig.cap = "Number of registered daily deaths due to COVID-19 in Peru from March 16 to June 22, 2020"}
+
+#fallecidos_covid%>% summarise(deaths.COVID19=n()) # 10589
+
+suma<-fallecidos_covid%>% 
+  mutate (FECHA_FALLECIMIENTO=as.Date(FECHA_FALLECIMIENTO,"%d/%m/%y"),
+          week = isoweek(FECHA_FALLECIMIENTO)) %>%
+          group_by(FECHA_FALLECIMIENTO)%>%
+          summarise(Covid_deaths= n())
+
+ggplot(suma)+
+  geom_line(aes(x=FECHA_FALLECIMIENTO,y=Covid_deaths))+
+   scale_x_date(date_breaks = "1 week")+
+     labs(caption = "Source: Sala Situacional MINSA")+
+  theme(axis.text.x = element_text(size=10, angle=45,vjust=0.5),legend.position ="none")+
+  xlab("") + 
+  ylab("Deaths")+theme(panel.background = element_blank())
+
+```
+
+### Step 2: Analysis 
+
+The death count shows great variability between regions. Table \@ref(tab:countcovid) shows that the highest numbers are in the most populated part of the country, Lima, with 5,611 deaths, followed by other coastal regions such as Piura and Lambayeque, with 845 and 799 deaths, respectively. Conversely, 6 regions report less than 30 registered deaths caused by COVID-19. Since the populations of different regions vary, it is more useful to compare the death rate per million people.  Figure \@ref(fig:covidregion) shows how regions of  Ica, Callao, Lambayeque, Lima, Madre de Dios and Tumbes report more 500 deaths per million, while an important number of less populated Andean regions shows rates 10 times fewer than the previous.
+
+```{r, countcovid}
+
+countcovid<-fallecidos_covid%>% group_by(DEPARTAMENTO)%>% summarise(deaths.COVID19=n())
+
+knitr::kable(countcovid,booktabs = T, format="latex",
+       caption = "Number of deaths reported by region as caused by COVID-19 until July 3rd")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+```
+
+```{r, covidregion,fig.align='center', fig.height=3,fig.cap= "Deaths COVID-19 per million - 23 June 2020"}
+
+pop.reg.20<-pob.regiones.group.age.sex.2020%>%ungroup()%>%group_by(Departamento)%>%
+  summarise(pop=sum(population))
+
+fallecidos_covid%>% group_by(DEPARTAMENTO)%>%
+  summarise(deaths.COVID19=n())%>% 
+  left_join(pop.reg.20, by=c("DEPARTAMENTO"="Departamento"))%>%    group_by(DEPARTAMENTO)%>%
+  summarise(deaths.COVID19=mean(deaths.COVID19),
+            deaths.per.million=(deaths.COVID19/pop)*1000000) %>% 
+      ggplot()+
+  geom_point(aes(x= reorder(DEPARTAMENTO, -deaths.per.million),
+                 y=deaths.per.million))+theme(panel.background = element_blank())+
+       theme(axis.text.x = element_text(size=9, angle=45,vjust = .4))+
+  xlab("Regions") + 
+  ylab("Deaths per million")+
+  labs(caption = "Author's calculation based on MINSA")+
+  scale_y_continuous(breaks = seq(0,800,50))+
+  geom_hline(yintercept=500, linetype="dashed", 
+                color = "darkorange", size=.75)+
+  geom_hline(yintercept=50, linetype="dashed", 
+                color = "darkorange", size=.75)
+
+#pob.regiones.group.age.sex.2020
+
+```
+
+Table \@ref(tab:covidage) shows that over 69% of deaths reported as caused by COVID-19 were among people aged over 60. This age pattern is consistent across all regions regardless of population size or geographical location.
+
+```{r, covidage}
+
+covidage<-fallecidos_covid%>%group_by(range)%>% summarise(deaths.COVID19=n(),`%total` = n()/nrow(.)*100)
+
+knitr::kable(covidage,booktabs = T, format="latex",
+       caption = "Number of deaths reported by age as caused by COVID-19 until July 3rd") %>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+
+#fallecidos_covid%>%group_by(range,DEPARTAMENTO)%>% summarise(deaths.COVID19=n()) %>% ggplot()+geom_point(aes(x=range,y=deaths.COVID19))+facet_wrap(~DEPARTAMENTO,scales="free")
+    
+```
+
+## Fifht layer: Excess mortality
+
+### Estimating excess mortality
+
+Excess mortality is a subset of the total count of deaths over a certain period of time. Figure \@ref(fig:excess) shows each component of our analytical framework. 
+
+```{r, excess, out.width='100%', fig.cap="Understanding excess of mortality"}
+
+knitr::include_graphics('C:/Users/LUCAS/Desktop/Excess.deaths.PERU/graph.excess.jpg')
+
+```
+
+We compute excess deaths from an unobserved counterfactual scenario, which projects average weekly deaths from previous years to the present. This requires assessing the potential existence of differences between 2020 and previous years. In some cases there is visual evidence of a pattern change. In other cases, we need to implement more sophisticated tools to detect possible differences over time.
+
+To do this, we fit a Bayesian state-space time series model [@Scott2014] using data prior to the pre-intervention and developing a conterfactual time series synthetic control [@Abadie2010]. The inferential part of the method relies on the use of Markov chain Monte Carlo (MCMC) to simulate the counterfactual posterior distribution. In this case, we compare the expected value of the observed data $y_\text{t}$ in time points $\text{t}=\text{t}_0+1+...,\text{t}$ to the average of samples from the forecasted posterior distribution $\hat y_{t}$ of each draw ${\tau}$. More details about the method and the implementation packages `CausalImpact` and `BSTS` are found in [@Brodersen2015;@Scott2014]. Synthetic control methods have been widely used in the field [@Bouttell2018], while this specific method has been already used to evaluate health interventions [@Bruhn2017; @Kurz2019]. 
+ 
+In our case, we are looking to evaluate changes in the number of deaths registered since the outbreak of COVID-19. We state as our null hypothesis, $H_0$  the absence of a significant change in the number of registered deaths during 2020 at the regional level, as:
+
+\begin{equation}
+  \label{eq:bayes}
+   \begin{cases}
+  H_0: \phi_{t}^{\tau}= y_{t} -  \hat y_{t}^{\tau} = 0 \\[1ex]
+  H_a: \phi_{t}^{\tau}= y_{t} -  \hat y_{t}^{\tau} \neq 0.
+   \end{cases}
+\end{equation}
+
+Now we turn to the computation of excess mortality for areas where there is robust evidence of excess deaths. Our approach decomposes the estimation of total excess of deaths $\text{Excess.d}_\text{T}$ into two dimensions: one related to the registered death count and other related to the average and the additional non-registered deaths. The decomposition is:
+
+\begin{equation}
+  \label{eq:9}
+  \widehat{\text{Excess.d}}_\text{T} = \widehat{\text{Excess.d}}_\text{Reg}+\widehat{\mu}_{\text{Deaths}_\text{Not.reg}}
+\end{equation}
+
+The computation of the first term of Equation \@ref(eq:9), the excess of registered mortality, $\widehat{\text{Excess.d}}_\text{Reg}$, is based only on data provided by SINADEF.  We compare the weekly average of deaths from 2018 and 2019 to the number of weekly deaths in 2020. We compare values from mid-March, when the first COVID-19 death case was registered, until the current time. This can be formally notated as:
+
+\begin{equation}
+  \label{eq:10}
+  \widehat{\text{Excess.d}}_\text{Reg}= \frac{1}{n}{\sum_{week=12}^{n} \text{Reg.deaths}_{2020}}-1/n{\sum_{week=12}^{n} \text{Reg.deaths}_{2017-2019}}
+\end{equation}
+
+The second term consists in the estimation of the recent historic average of not registered deaths in the country, $\widehat{\mu}_{\text{Deaths}_\text{Not.reg}}$. T This relies on the assumption that under-registration in recent years is a reasonable counterfactual to estimate missing registration in 2020. We explore visual patterns and rates to evaluate the robustness of the assumption. We follow a deterministic approach and assume under-registered COVID-19 deaths are also captured in this term. The term is computed as the product of the registration completeness ratio, $\widehat{\text{Comp.reg}}$ and the average of registered deaths on 2018-2019, $\widehat{\text{Comp.reg}}$, as follows:
+
+\begin{equation}
+  \label{eq:11}
+  \widehat{\mu}_{\text{Deaths}_\text{Not.reg}}= (1-\widehat{\text{Comp.reg}})*\widehat{\text{Excess.d}}_\text{Reg}
+\end{equation}
+
+We now address three cases of atypical data behaviour. 
+
+First, some regions of Peru may not be significantly affected by COVID-19. This case corresponds to the non rejection of $H_0$ based on the hypothesis tests of \@ref(eq:bayes). A second case occurs when there is no solid evidence suggesting under-registration of deaths over time in some regions or age groups, which is given by $\widehat{\text{Excess.d}}_\text{Not.reg} \le 0$. This occurs usually in areas or sub-categories with very small populations. A third possibility is the scenario where less deaths occur due to a positive but unintended effect of quarantine or curfews (such as fewer road accidents or violent crimes). In this case, certain groups are not affected by an excess of deaths, and then $\widehat{\text{Excess.d}}_\text{Reg} \le 0$. In these cases, we compute excess deaths without adding the terms from Equation \@ref(eq:11) referring to unregistered figures (as they would provide add negative values to the sum, biasing the results). To address uncertainty, we estimate the total excess deaths only computing a 95% CI based on the standard error of the parameter, where  $\text{n}$ represents the number of observations at the regional level.
+
+In the other cases,  we compute the overall magnitude of mortality adding both terms. Equation \@ref(eq:13)  summarises the estimation of $\widehat{\text{Excess.d}}_\text{T}$ based on INEI data, where the 95% CI are provided by prior estimations of lower and upper bounds from Equations \@ref(eq:4) and \@ref(eq:6), conditionally to \@ref(eq:bayes) and $\widehat{\text{Excess.d}}_\text{Reg} \le 0 \lor\widehat{\text{Excess.d}}_\text{Reg} \geq 0$. as follows:
+
+\begin{equation} \label{eq:13}
+      \begin{cases}
+      \!\begin{aligned}
+        & \widehat{\text{Excess.d}}_\text{T}= \widehat{\text{Excess.d}}_\text{Reg} 
+        \pm 1.96\sqrt(\hat{\sigma}_\frac{{\text{Excess.d}}_\text{Reg}}{\text{n}-1}), 
+        &\text{if }\phi(\tau)=0 \lor \widehat{\text{Excess.d}}_\text{Reg} \le 0,  \\[1ex]
+        &\widehat{\text{Excess.d}}_{\text{T}_\text{max}} = \widehat{\text{Excess.d}}_\text{Reg}+
+        \Big(\widehat{\mu}_{\text{Deaths}_\text{Not.reg}}+
+        1.96\sqrt{\widehat{\text{MR}}*\widehat{\text{pop}}\sqrt{(\frac{\hat{\sigma}_\text{MR}}{\widehat{\text{MR}}})^2+
+        (\frac{\hat{\sigma}_\text{pop}}{\widehat{\text{pop}}})^2}}\Big) & \text{and }\\[1ex]
+        &\widehat{\text{Excess.d}}_{\text{T}_\text{min}} =  \widehat{\text{Excess.d}}_\text{Reg}+
+        \Big(\widehat{\mu}_{\text{Deaths}_\text{Not.reg}}-
+        1.96\sqrt{\widehat{\text{MR}}*\widehat{\text{pop}}\sqrt{(\frac{\hat{\sigma}_\text{MR}}{\widehat{\text{MR}}})^2+
+        (\frac{\hat{\sigma}_\text{pop}}{\widehat{\text{pop}}})^2}}\Big),\\[1ex]
+        &\text{if }\phi(\tau) \neq 0  \land \widehat{\text{Excess.d}}_\text{Reg} \geq 0.
+    \end{aligned}
+  \end{cases}
+  \end{equation}
+
+In case of GBD, total excess of mortality $\widehat{\text{Excess.d}}_\text{T}$ and the 95% CI are estimated from Equations \@ref(eq:4b) and \@ref(eq:9), conditionally to \@ref(eq:bayes) as follows:
+
+\begin{equation} \label{eq:14}
+      \begin{cases}
+      \!\begin{aligned}
+        & \widehat{\text{Excess.d}}_\text{T}= \widehat{\text{Excess.d}}_\text{Reg} 
+        \pm 1.96\sqrt{\hat{\sigma}_{\text{Excess.d}_\text{Reg}}},
+        &\text{if }\phi(\tau)=0 \lor \widehat{\text{Excess.d}}_\text{Reg} \le 0,  \\%[1ex]
+        &\widehat{\text{Excess.d}}_\text{T} = \widehat{\text{Excess.d}}_\text{Reg}+\widehat{\mu}_{\text{Deaths}_\text{Not.reg}}+\widehat{\text{Excess.d}}_\text{Not.reg} 
+        &\text{and }\\[1ex]
+        &\widehat{\text{Excess.d}}_{\text{T}_\text{max}} = \widehat{\text{Excess.d}}_\text{Reg}+
+        \Big( \widehat{\mu}_{\text{Deaths}_\text{Not.reg}}+
+        1.96\sqrt{\hat{\sigma}_{\text{Excess.d}_\text{Reg}}} \Big)  &\text{and }\\[1ex]
+              &\widehat{\text{Excess.d}}_{\text{T}_\text{min}} = \widehat{\text{Excess.d}}_\text{Reg}+
+        \Big (\widehat{\mu}_{\text{Deaths}_\text{Not.reg}}-
+        1.96\sqrt{\hat{\sigma}_{\text{Excess.d}_\text{Reg}}} \Big), &\text{if }\phi(\tau) \neq 0  \land \widehat{\text{Excess.d}}_\text{Reg} \geq 0.
+    \end{aligned}
+  \end{cases}
+  \end{equation}
+
+Our analysis makes two assumptions. First, it analysis assumes that comparison between years is not invalidated by specific time-bound mortality events such as additional disease outbreaks or wars. A second assumption is that registration patterns remain stable and any changes over time are due to death rates. Both assumptions can be assessed by visualising the data and analysing changing trends. More complex analysis such as change-point detection, computing growth rates or advanced time series analysis could also be valuable, although the absence of stationary data cannot be easily solved without in-depth knowledge of real causes.
+We use SINADEF data for 2018 to 2020 but not for 2017. First, as a new system, the magnitude of data collected is not stable in comparison to other years. In case of Lambayeque, after visually and analytically assessing a significant change in trend in 2020, we only use data from 2019 and 2020, as the inclusion of the prior year on the average distorts results for some subgroups, resulting in negative excess mortality.
+
+### Step 2: Results 
+
+We plot the time series of SINADEF by region to visually assess if our assumptions hold. Figure \@ref(fig:patterns) shows almost all regions present a stable trend over time, with negative peaks at the end of each year (around weeks 53, 106, 154) due to interrupted reporting during national holidays. A few regions such as Lima, Cusco and Arequipa show a slight increase from 2017, due to their large populations compared to other regions, which is expected to create a clearer learning curve in terms of adherence to the new system. By 2020, most regions show significant increases in deaths. The vertical orange line shows the week for the first confirmed COVID-19 death. Four regions provide no evidence of COVID-19 deaths: Ayacucho, Cusco, Puno and Tacna. Lambayeque shows a very erratic trend through 2019, which suddenly changes at the beginning of the pandemic in mid-March.
+
+```{r, patterns, fig.height=6, fig.cap= "Weekly deaths by region registered in SINADEF"}
+SINADEF.ch2<-SINADEF %>% 
+  mutate(FECHA = as.Date(FECHA, "%Y-%m-%d"),
+    week = lubridate::week(FECHA)+53* lubridate::year(FECHA)-min( lubridate::year(FECHA))-104884) %>% 
+  group_by(Departamento,week)%>% summarise(deaths.sinadef=n())
+
+SINADEF.ch2 = SINADEF.ch2[order(SINADEF.ch2$week), ]
+
+SINADEF.ch2%>%filter(week<188)%>%  # CHECK NUMBER OF WEEK
+  ggplot()+geom_line(aes(x=week,y=deaths.sinadef))+theme(panel.background = element_blank())+
+  scale_x_continuous(breaks = seq(0,220,40))+ geom_vline(xintercept = 167, linetype="dotted", color = "darkorange", size=1)+facet_wrap(~Departamento,scales = "free") +
+       theme(axis.text.x = element_text(size=7, angle=45,vjust = .4))+
+  xlab("Weeks since January 2017") + 
+  ylab("Deaths")+
+  labs(caption = "SINADEF")
+```
+
+#### Weekly deaths by region registered in SINADEF
+
+To assess whether there has been a change of patterns, we perform a Bayesian Times series univariate analysis on weekly averages from week 2 (avoiding the seasonal under-reporting of week 1) to week 28 of 2020. We set week 16 as the cut-off point, which is three weeks later than the first registered death by COVID-19 in the country. This relies on observed data that the spread of COVID-19 across regions was uneven. We draw MCMC 5,000 samples to increase the accuracy of inference and set a Bayesian one-sided tail-area probability p <. 05 to reject $H_0$. Table \@ref(tab:cac1) shows only Puno present p.>.05 and it will be excluded from the estimates of excess of mortality (as they may provide positive values that bias the final estimates). This case will receive a different treatment, as stated in Equations \@ref(eq:13) and \@ref(eq:14).
+
+```{r, cac1}
+
+cac1 = do.call("rbind", lapply(cac, "[[", 2))
+
+cac1 = cac1 %>% dplyr::filter(row_number() %% 2 == 1)
+
+cac1$Departamento<-Depa
+
+knitr::kable(cac1[,c(16,2:5,15)],booktabs = T, format="latex",
+       caption = "Average of predicted deaths under Bayesian Time Series Analysis counterfactual estimation and significance tests",row.names = F) %>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+###
+
+```
+
+With reference to age, Figure \@ref(fig:sinadefrange) similar patterns across all groups, following the population-wide results of stable trends with negative yearly peaks. The effect of the pandemics is clear across older cohorts, while the opposite applies for younger ages. In some groups, such as people aged 20-39, there is a delayed negative effect of the pandemic. The last plot of the series reflects cases without an age identification and thus represent white noise (NA). They have a very small y-scale and they do not affect the overall trends.
+
+```{r, sinadefrange, fig.height=4, fig.cap = "Weekly deaths by range of age registered in SINADEF"}
+SINADEF.ch4<-SINADEF %>% 
+  mutate(FECHA = as.Date(FECHA, "%Y-%m-%d"),
+   week =  lubridate::week(FECHA)+53* lubridate::year(FECHA)-min( lubridate::year(FECHA))-104884) %>% 
+  group_by(range,week)%>% summarise(deaths.sinadef=n())
+
+SINADEF.ch4 = SINADEF.ch4[order(SINADEF.ch4$week), ]
+
+SINADEF.ch4%>%filter(week<186)%>%
+  ggplot()+geom_line(aes(x=week,y=deaths.sinadef))+theme(panel.background = element_blank())+
+  scale_x_continuous(breaks = seq(0,200,40))+ geom_vline(xintercept = 167, linetype="dotted", color = "darkorange", size=1)+facet_wrap(~range,scales = "free") +
+       theme(axis.text.x = element_text(size=9, angle=45,vjust = .4))+
+  xlab("Weeks since January 2017") + 
+  ylab("Deaths")+
+  labs(caption = "SINADEF")
+
+
+```
+
+We decompose regional data into different components: seasonal patterns, trend and residual components using locally estimated scatterplot smoothing (LOESS). This enables us to identify specific seasonal effects [@RobertBCleveland1990]. We set a periodic window that assumes no major changes in patterns over the last three years and apply robust smoothing to deal with possible data outliers. Figure \@ref(fig:STL) shows the results of the decomposition exercise for one region, Cusco. It shows both a strong influence of long-term trends and the absence of weekly seasonality. The same pattern is found in all other regions. Model parameters are found in the Appendix.
+
+```{r, STL,fig.align='center', fig.height=4, fig.cap = "STL decomposition - CUSCO"}
+
+##### SEASONALITY
+season<-SINADEF %>%
+  mutate(FECHA = as.Date(FECHA, "%Y-%m-%d"),
+         week =  lubridate::isoweek(FECHA)) %>%filter(AÑO !="2020")
+
+season <- season %>% 
+  group_by(FECHA,Departamento)%>% summarise(deaths=n()) %>% 
+  dplyr::select(deaths,Departamento) %>%
+  as_tsibble(index = FECHA,key=c(Departamento))
+
+a<-season %>% fill_gaps(deaths=1)%>%
+  model(STL(deaths ~ season(window = "periodic"),robust=TRUE))
+
+a %>% filter(Departamento=="LIMA")%>%components()%>% autoplot()+ theme(legend.position='none')+
+    labs( caption = "Source: SINADEF",title = "")+
+  theme(axis.text.x = element_text(size=10, angle=45),legend.position ="none")+
+  xlab("") +theme_bw()+
+  labs(caption = "Author's own based on SINADEF")
+
+
+#components(a)
+
+#season %>% autoplot(deaths, color='gray') + autolayer(components(a), trend, color='red')+ theme(legend.position='none')+ facet_wrap(~Departamento,scales = "free")
+
+```
+
+The estimations of excess of registered deaths based on SINADEF raises to 41,700 deaths by week 28 (ending 12.7.20).  Table \@ref(tab:excessreg) presents excess deaths disaggregated by regions. Lima has the highest excess with 24,397 deaths over the previous average, followed by Callao and Piura (3,083 and 2,612). Some regions (Amazonas, Ayacucho, Cajamarca, Cusco, Puno and Tacna, among others) have negative excess mortality. This will affect the final computation strategy, as mentioned above. The region of Puno reports the largest positive scenario with 468 fewer deaths than the average over previous years, followed by Cusco (338).
+
+```{r, excessreg}
+
+#deaths2.range%>%  group_by(week)%>% filter(!is.na(range))%>%summarise(s=sum(excess_deaths)) %>% print(n=25)  %>% ungroup()%>% summarise(ss=sum(s)) # 37160
+
+ex.reg.re<- deaths2.range%>% 
+  group_by(Departamento)%>% filter(!is.na(range))%>%
+  summarise(s=sum(excess_deaths))
+
+knitr::kable(ex.reg.re,booktabs = T, format="latex",
+       caption = "Excess of deaths based on SINADEF - weeks 12 to 28 in 2020 by regions")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+```
+
+Table \@ref(tab:excessage) shows excess mortality for age groups. Deaths among people aged up to 30 are below average. By contrast, excess mortality for people aged 60 or over surpasses 10,000.
+
+```{r, excessage}
+
+de2<-deaths2.range%>% 
+  group_by(range)%>% filter(!is.na(range))%>%
+  summarise(s=sum(excess_deaths)) #%>%print(n=25) #%>% ungroup()%>% summarise(ss=sum(s)) # 31248
+
+
+knitr::kable(de2,booktabs = T, format="latex",
+             caption = "Excess of deaths based on SINADEF - weeks 12 to 28 in 2020 by regions")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+
+```
+
+Combined analysis of SINADEF and reported COVID-19 deaths shows an important gap for all regions with excess mortality. Figure \@ref(fig:excessCOVID) shows that Lima, Callao, Piura, Ucayali, Loreto, and Tumbes have over double the number of deaths compared to previous years. In Lambayeque COVID-19 deaths make up 50.6% of total mortality, while in Lima and Piura they make up 15.8% and 18.6%. This may mean that reporting of deaths not caused by COVID-19 is relatively low in Lambayeque or that Lima and Piura are reporting a lower share of deaths caused by COVID-19. Since it is unsafe to assume stable reporting for the region of Lambayeque, we compare 2020 weeks against values in 2017 in the final analysis. This gives a better estimate for the expected number of registered deaths.
+
+```{r, excessCOVID,fig.align='center', fig.height=7}
+#deaths4%>%filter(Departamento=="LAMBAYEQUE" & AÑO =="2020"&week>11 )%>% summarise(a=sum(deaths,na.rm=T), b=sum(Covid_deaths,na.rm = T), c=mean(b)/mean(a))
+
+#deaths4%>%filter(Departamento=="LIMA" & AÑO =="2020"&week>11 )%>%  summarise(a=sum(deaths,na.rm=T), b=sum(Covid_deaths,na.rm = T), c=mean(b)/mean(a))
+
+#deaths4%>%filter(Departamento=="PIURA" & AÑO =="2020"&week>11 )%>%  summarise(a=sum(deaths,na.rm=T), b=sum(Covid_deaths,na.rm = T),c=mean(b)/mean(a))
+
+
+deaths4 %>% group_by(Departamento)%>%
+  ggplot() +
+  geom_line(aes(week, Excess_deaths, group = AÑO), col = "gray", alpha = .25) +
+  geom_line(data = . %>% filter(AÑO == 2020 & week>= 12), aes(week, Excess_deaths), 
+            col = "darkorange", size = 1) +
+  geom_line(data = . %>% filter(AÑO == 2020), aes(week, Covid_deaths),
+            col = "red", size = 1, na.rm = T) +
+  geom_area(data = . %>% filter(AÑO == 2020, week >= 12, Excess_deaths>0), 
+            aes(week, Excess_deaths),
+            fill = "darkorange", size = 1, alpha = .2) +
+   geom_hline(yintercept = 0, size = 0.75, col = "steelblue",alpha=.2) +
+  geom_label(data = subset(deaths4,ExcessRatio>2),
+    aes(Max_week+12, exp(log(Max_excess_deaths)/1.2), 
+                 label = paste0("+", ExcessRatio, "%")),
+             color = "darkorange", na.rm = T, fontface = "bold", size = 2.5,
+    alpha = .5) +
+    geom_label(data = subset(deaths4,ExcessRatio< -10),
+      aes(Max_week+12, exp(log(Max_excess_deaths+5)/1.1), 
+                 label = paste0("-", ExcessRatio, "%")),
+             color = "darkgreen", na.rm = T, fontface = "bold", size = 2.5,
+      alpha = .5)+
+facet_wrap(~Departamento, scales = "free_y") + 
+  labs(title = "<b style = 'color:darkorange'>Excess</b> of reported deaths vs 
+                <b style = 'color:red'>reported COVID</b> deaths per week",
+       subtitle = "<b style = 'color:darkorange'>Ratio</b>/<b style = 'color:darkgreen'>Ratio</b> shows death <b style = 'color:darkorange'>increase</b> or <b style = 'color:darkgreen'>decrease</b> respect to weekly 2017-2019 average",
+       caption = "**Source:**
+                <b style = 'color:steelblue'>SINADEF</b> **&** 
+                <b style = 'color:red'>MINSA Sala Situacional COVID-19</b>") +
+  theme_minimal() + 
+  theme(strip.text = element_text(size = 9, face = "bold"),
+        axis.title.x = element_text(size = 12),
+        axis.title.y = element_blank(),
+        panel.grid = element_blank(),
+        plot.title = ggtext::element_markdown(size = 16),
+        plot.subtitle = ggtext::element_markdown(size = 11), 
+        plot.caption = ggtext::element_markdown(size = 8), 
+  ) 
+```
+
+We now present our estimate of total excess deaths, which include the non-registered terms in the equation. The estimates consider different scenarios, using INEI and GBD mortality and population projections, and fitting data using the $\text{ARIMA}$ and $\text{RWD}$ models.
+
+Table \@ref(tab:exinei) summarises aggregated estimates, with mean values of around 54,600 deaths for all the regressions. For example, the combination of $\text{ARIMA}$ models gives an expected value of 54,645 95% CI (45,534 to 63,739). This clearly suggests a significant downward bias of identification of COVID-19 deaths in official sources(reporting 12,504 deaths). Estimated non-registered notifications add 13,000 to excess registered mortality (equivalent to 23.7% of non-registered deaths). This level of underestimate is slightly higher than for the GBD estimates [@Dicker2018], which generate around 19.6% additional deaths. Comparing death registrations from INEI and SINADEF in 2016 and 2017 shows SINADEF registrations still lag behind previous years.  
+
+```{r, exinei}
+
+exinei<-tateti%>%
+  group_by(model.pop,model.mort)%>%
+  summarise(`Total excess`=sum(excess.total.mean,na.rm = T),
+            `Lower.CI95%`=sum(excess.total.low,na.rm = T),
+            `Upper.CI95%`=sum(excess.total.up,na.rm = T),
+            `Deaths SINADEF`=sum(deaths.sinadef,na.rm = T),
+            `Covid deaths`=sum(Covid_deaths,na.rm = T)) 
+
+knitr::kable(exinei,booktabs = T, format="latex",
+  caption = "Estimated of excess of deaths based on INEI - weeks 12 to 28")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+Table \@ref(tab:exineiage) shows that 76% of total excess deaths are among people aged 60 or over, with an expected value of 42,000 additional deaths across the models. For people 80 or over reported COVID-19 deaths account for the lowest share of total estimated excess deaths (15.9%), possible due to higher rates of misreporting cause of death for this age group.
+
+``` {r,exineiage }
+exineiage<-tateti%>%group_by(range)%>%
+  filter(model.pop=="arima"&model.mort=="arima")%>%
+  summarise(`Excess`=sum(excess.total.mean,na.rm = T),
+            `Lower.CI`=sum(excess.total.low,na.rm = T),
+            `Upper.CI`=sum(excess.total.up,na.rm = T),
+            `SINADEF`=sum(deaths.sinadef,na.rm = T),
+            `Covid`=sum(Covid_deaths,na.rm = T),
+            `Covid:Excess`=`Covid`/`Excess`) 
+
+knitr::kable(exineiage,booktabs = T, format="latex",
+  caption = "Estimated of excess of deaths based on INEI - weeks 12 to 28: age groups")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+Table \@ref(tab:exineiregion) presents estimations of excess of deaths by region. Lima shows 29,309 95% CI (25760, 32857) deaths followed by Callao, Piura, Lambayeque and La Libertad, averaging 2,500 to 3,100 deaths. Six regions yield negative values: Amazonas, Ayacucho, Cajamarca, Cusco, Puno and Tacna. However, in cases like Amazonas, Ayacucho and Tacna the upper bound of 95% are close or over 0.
+
+Table \@ref(tab:exineiregion) shows estimated excess deaths by region. For Lima there were 31,933 95% CI (28,077, 35,786) excess deaths, followed by Callao, Piura, Lambayeque and La Libertad, averaging 2,500 to 3,100 deaths. Four regions yield negative expected values: Ayacucho,  Cusco, Puno and Tacna. In cases like Amazonas and Cajamarca the lower levels of the 95% CI are lower than 0.
+
+``` {r, exineiregion}
+exineiregion<-tateti%>%group_by(Departamento)%>%  filter(model.pop=="arima"&model.mort=="arima")%>%summarise(`Total excess`=sum(excess.total.mean,na.rm = T),            `Lower.CI95%`=sum(excess.total.low,na.rm = T),`Upper.CI95%`=sum(excess.total.up,na.rm = T), `Deaths SINADEF`=sum(deaths.sinadef,na.rm = T),`Covid deaths`=sum(Covid_deaths,na.rm = T))
+
+knitr::kable(exineiregion,booktabs = T, format="latex",
+  caption = "Estimated of excess of deaths based on INEI - weeks 12 to 28: regions")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+```
+
+Table \@ref(tab:exgbd) shows estimates based on GBD data, which, at around 46,000, are slightly lower than those based on INEI data. Confidence intervals are significantly larger than for the models based on INEI data, signifying a 19% under-registration rate. Estimations show same patterns than INEI models across age groups, with 75% of excess deaths occurring among people aged 60 and Lima, Piura and Callao reporting the largest shares of deaths.
+
+``` {r,exgbd}
+exgbd<-tateti2%>%group_by(.model)%>% 
+  summarise(`Total excess`=sum(excess.total.mean,na.rm = T),
+            `Lower.CI95%`=sum(excess.total.low,na.rm = T),
+            `Upper.CI95%`=sum(excess.total.up,na.rm = T),
+            `Deaths SINAEF`=sum(deaths.sinadef,na.rm = T),
+            `Covid deaths`=sum(Covid_deaths,na.rm = T)) 
+
+knitr::kable(exgbd,booktabs = T, format="latex",
+  caption = "Estimated of excess of deaths based on GBD - weeks 12 to 28")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+```
+
+``` {r, exgbdage }
+#tateti2%>%group_by(range)%>% filter(.model=="arima")%>%
+#  summarise(`Total excess`=sum(excess.total.mean,na.rm = T),
+#            `Lower.CI95%`=sum(excess.total.low,na.rm = T),
+#            `Upper.CI95%`=sum(excess.total.up,na.rm = T),
+#            `Total number deaths`=sum(deaths.sinadef,na.rm = T),
+#            `Covid deaths`=sum(Covid_deaths,na.rm = T),
+#            `Ratio COVID/Excess`=mean(`Covid deaths`,na.rm = T)/mean(`Total excess`,na.rm = T),
+#            `Ratio Excess/Total`=mean(`Total excess`,na.rm = T)/
+#              mean(`Total number deaths`,na.rm = T))  %>% print(n=25)
+
+```
+
+```{r, exgbdreg}
+#tateti2%>%group_by(Departamento)%>% filter(.model=="arima")%>%
+#   summarise(`Total excess`=sum(excess.total.mean,na.rm = T),
+#            `Lower.CI95%`=sum(excess.total.low,na.rm = T),
+#            `Upper.CI95%`=sum(excess.total.up,na.rm = T),
+#            `Total number deaths`=sum(deaths.sinadef,na.rm = T),
+#            `Covid deaths`=sum(Covid_deaths,na.rm = T),
+#            `Ratio COVID/Excess`=mean(`Covid deaths`,na.rm = T)/mean(`Total excess`,na.rm = T),
+#            `Ratio Excess/Total`=mean(`Total excess`,na.rm = T)/
+#              mean(`Total number deaths`,na.rm = T))  %>% print(n=25)
+```
+
+Figure \@ref(fig:ex) shows estimates by region and age group. The general trend is for higher rates of excess deaths among older people, although this is not the case for some regions Ayacucho, Cajamarca, Moquegua and Tacna. The reasons for this counter-intuitive result are not explored in this paper.  
+
+```{r, ex,fig.align='center', fig.height=6, fig.cap="Total excess of deaths by regions - different models"}
+
+ta<-tateti%>%group_by(Departamento,range,model.pop,model.mort)%>%
+  #filter(model.pop=="drift"&model.mort=="drift")%>%
+  summarise(m=sum(excess.total.mean,na.rm = T),
+            l=sum(excess.total.low,na.rm = T),
+            u=sum(excess.total.up,na.rm = T))
+
+
+ta2<-tateti2%>%group_by(Departamento,range,.model)%>%
+  #filter(model.pop=="drift"&model.mort=="drift")%>%
+  summarise(m=sum(excess.total.mean,na.rm = T),
+            l=sum(excess.total.low,na.rm = T),
+            u=sum(excess.total.up,na.rm = T))
+
+ggplot()+
+  geom_point(data=subset(ta,model.pop=="drift"& model.mort=="drift" &!is.na(range)),
+             aes(x=range,y=m,colour="drift/drift"),
+             position = "jitter")+
+   geom_point(data=subset(ta,model.pop=="arima"& model.mort=="arima"&!is.na(range)),
+             aes(x=range,y=m,colour="arima/arima"),
+             position = "jitter")+ 
+    geom_point(data=subset(ta,model.pop=="drift"& model.mort=="arima"&!is.na(range)),
+             aes(x=range,y=m,colour="drift/arima"),
+             position = "jitter")+
+    geom_point(data=subset(ta,model.pop=="arima"& model.mort=="drift"&!is.na(range)),
+             aes(x=range,y=m,colour="arima/drift"),
+             position = "jitter")+
+    geom_point(data=subset(ta2,!is.na(range)),
+             aes(x=range,y=m,group=.model,colour=.model),
+             position = "jitter")+
+             facet_wrap(~Departamento,scales = "free")+
+   theme(axis.text.x = element_text(size=7, angle=45,vjust = .5),
+         legend.text = element_text(size = 6),
+        legend.key.size = unit(1,"line"))+
+   theme(legend.position ="bottom")+ guides(col = guide_legend(ncol = 6))
+
+```
+
+Table \@ref(tab:compare) shows projections based on current excess deaths, assuming all other things remain equal. This shows an increase to 195,000 expected deaths, which is 21.7 % higher than INEI estimates for 2020.
+
+```{r, compare}
+
+compare<-tateti%>%group_by(model.pop,model.mort)%>%
+summarise(`Ratio Excess`=sum(excess_deaths.sum,na.rm = T)/sum(excess.total.mean,na.rm = T),
+`Projected 2020`=(sum(deaths.sinadef,na.rm = T)/(28/53))/`Ratio Excess`)
+
+#chequear defunciones INEI: 2018 151690    -> 195026/151690 + 21.7%
+
+knitr::kable(compare,booktabs = T, format="latex",  caption = "Projected number of deaths Estimated of excess of deaths based on GBD - weeks 12 to 28")%>%   kableExtra::kable_styling(latex_options = "hold_position")
+
+```
+
+Our comparisons across results need to take into account differences in population sizes and age structures. To address this problem, we compute standardised adjusted mortality rates across regions using direct standardisation  [@Curtin1995]. We use population estimates by region and age group, as well as total estimated deaths. Table \@ref(tab:smrd) shows adjusted mortality ratios by region until week 28 of 2020. Ucayali, Tumbes, Madre de Dios, Loreto and Callao have rates of over 4, while Puno, Amazonas, Tacna and Ayacucho show the lowest adjusted rates -less than 1.
+
+```{r, smrd}
+
+pob20.r<- pob.nac.ed.sex.1950.2020%>% group_by(range,Sexo)%>%
+dplyr::select (`2020`)  %>%
+summarise(across(`2020`, sum)) %>%
+pivot_longer(cols = `2020`,values_to="pob") %>%group_by(range)%>%
+summarise(pob=sum(pob))
+
+pob20.r<-pob20.r%>%
+mutate(range=case_when(
+range=="0-4" |range=="5-9" ~ "a0.9",
+range=="10-14" |range=="15-19" ~ "a10.19",
+range=="20-24" |range=="25-29" ~ "a20.29",
+range=="30-34" |range=="35-39" ~ "a30.39",
+range=="40-44" |range=="45-49" ~ "a40.49",
+range=="50-54" |range=="55-59" ~ "a50.59",
+range=="60-64" |range=="65-69" ~ "a60.69",
+range=="70-74" |range=="75-79" ~ "a70.79",
+range=="80+" ~ "a80"))%>%
+group_by(range)%>%
+summarise(popu=sum(pob))
+
+pob20.r<-pob20.r%>%mutate(freq=popu/sum(popu))
+
+tateti.std<-fc_mort.reg.piece.pop.edades%>%
+  filter(Año==2020 & model.pop=="arima"& model.mort=="arima")%>% 
+  dplyr::select(pop.estimated,range) %>%right_join(tateti,
+                  by= c("Departamento", "model.mort", "model.pop", "range"))
+
+#tateti.std%>%ungroup()%>%  summarise(p=sum(pop.estimated,na.rm = T))
+
+tateti.std <-tateti.std%>%filter(model.pop=="arima"& model.mort=="arima")%>%
+dplyr::mutate(ratio=excess_deaths.sum/excess.total.mean)
+
+tateti.std <-tateti.std %>% mutate(
+     Projected.total = ifelse(excess.total.mean <=0,
+                              deaths.sinadef,
+                              deaths.sinadef/ratio),
+      rates=1000*Projected.total/pop.estimated)  %>% left_join (pob20.r)
+
+smrd<- tateti.std %>% group_by(Departamento,range) %>%
+  summarise(std=freq*rates) %>%
+  group_by(Departamento)%>%
+  summarise(std.d=sum(std,na.rm = T))
+
+knitr::kable(smrd,booktabs = T, format="latex",
+  caption = "Age standardised mortality rates by regions 2020 - up to week 28")%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+
+#smrd %>%  arrange(-std.d) %>%        mutate(Departamento=factor(Departamento, levels=Departamento)) %>%    ggplot()+geom_point(aes(x=Departamento,y=std.d))+    theme(axis.text.x = element_text(size=10, angle=90))
+
+
+```
+
+# Conclusion
+
+This tutorial and case study provides a framework and tools to estimate the burden of death caused by the COVID-19 pandemic. This tutorial sets out an analytical path for progressively gathering and analyzing information to generate robust estimates of excess mortality. This approach can be applied in all countries, although the complexity of analysis will vary according to the availability and accuracy of data. There is strong evidence that excess COVID-19 mortality has disproportionately affected people at older ages [@Dowd2020]. Consequently, we include population age structure in our analysis.
+
+The case of Peru shows that significant under-registration of deaths caused by COVID-19. Official figures correspond to only 20-22% of total excess mortality and registered deaths. Different models and databases show that Lima, Piura, Callao are the worst affected regions and people 60 and over the most affected age group. Adjusted analysis shows that excess mortality is higher in less populated regions such as Tumbes and the amazon states of Ucayali, Loreto and Madre de Dios. Some regions, especially in the Andes, do not appear to have been significantly affected by the pandemic by the end of June, in terms of mortality.
+
+There are important limitations in our method. Estimates are based on provisional data, which are incomplete. Our estimates of registration completeness assume no variation across age groups, which may not be the case. Our time series analysis produces higher CIs when forecasting over extended periods, reducing the precision of estimates. Lags in reporting deaths may reduce the validity of our cutoffs. Finally, we present a conservative scenario, allowing for the existence of negative as well as positive excess deaths.
+
+# Appendix{#Appendix}
+
+### Model fit and residuals analysis: population INEI
+```{r, fite}
+
+fite<-fit.edades%>%tidy()
+
+knitr::kable(fite,booktabs = T,format="latex",
+            caption = 'Model fit population INEI')%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+fit.edades %>%augment()%>%features(.resid, ljung_box, lag=4, dof=0)%>%print(n=50)
+
+fit.edades%>%dplyr::select(-drift)%>% filter(Departamento=="LIMA"&range=="a70.79")%>% gg_tsresiduals()
+
+fit.edades%>%dplyr::select(-arima)%>% filter(Departamento=="LIMA"&range=="a70.79")%>%
+  gg_tsresiduals()
+
+
+```
+
+### Model fit and residuals analysis: mortality
+```{r, fitm}
+
+fitm<-fit.mort.reg%>%tidy()
+
+knitr::kable(fitm,booktabs = T,format="latex",
+            caption = 'Model fit mortality rate INEI')%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+fit.mort.reg %>%augment()%>%
+features(.resid, ljung_box, lag=4, dof=0)%>%print(n=50)
+
+fit.mort.reg%>%dplyr::select(-drift) %>%filter(Departamento=="AREQUIPA")%>%
+  gg_tsresiduals() 
+
+fit.mort.reg%>%dplyr::select(-arima) %>%filter(Departamento=="AREQUIPA")%>%
+  gg_tsresiduals() 
+
+```
+
+### Model fit expected mortality GBD
+```{r, fitg}
+
+fitg<-fit.GBD%>%tidy()
+
+knitr::kable(fitg,booktabs = T,format="latex",
+            caption = 'Model fit GBD')%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+fit.GBD%>%dplyr::select(-drift) %>%filter(range=="a70.79")%>%
+  gg_tsresiduals() 
+
+fit.GBD%>%dplyr::select(-arima) %>%filter(range=="a70.79")%>%
+  gg_tsresiduals() 
+
+fit.GBD %>%augment()%>%
+features(.resid, ljung_box, lag=5, dof=0)
+
+```
+
+### Model fit STL decomposition SINADEF
+```{r, STLa}
+
+STLa<-head(a%>%components())
+
+knitr::kable(STLa,booktabs = T,format="latex",
+            caption = 'Model fit STL: head')%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+
+
+
+```
+
+### Excess total INEI regions
+```{r, ineiregt}
+
+ineiregt<-tateti%>%group_by(Departamento,model.pop,model.mort)%>%
+  #filter(model.pop=="drift"&model.mort=="drift")%>%
+  summarise(mean=sum(excess.total.mean,na.rm = T),
+            `lower.CI95%`=sum(excess.total.low,na.rm = T),
+            `upper.CI95%`=sum(excess.total.up,na.rm = T))
+
+knitr::kable(ineiregt,booktabs = T,format="latex",
+            caption = 'Excess total INEI per region')%>%
+  kableExtra::kable_styling(latex_options = "hold_position")
+```
+
+
+# References
+
